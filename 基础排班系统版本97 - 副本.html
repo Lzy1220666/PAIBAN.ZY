@@ -1,0 +1,2862 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简易排班系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <script>
+        // 应用命名空间，减少全局污染
+        const SchedulingSystem = {
+            // 核心数据
+            scheduleData: [],
+            shiftTypes: [],
+            workShifts: [],
+            shiftTypeMap: new Map(),
+            shiftHoursMap: new Map([
+                ['REST', 0],
+                ['CBC_FL11', 12],
+                ['CBC_FL12', 12],
+                ['CBC_FL13', 10],
+                ['CBC_FL19', 8],
+                ['CBCFL16', 12],
+                ['DLPJ08', 12],
+                ['DLPJ09', 12],
+                ['FS01', 8],
+                ['FS02', 8],
+                ['FS03', 8],
+                ['FS04', 8],
+                ['FS05', 12],
+                ['FS06', 12],
+                ['LX44', 12],
+                ['LX45', 12],
+                ['LX46', 12],
+                ['LX47', 12],
+                ['TD009', 4],
+                ['TD010', 4],
+                ['TD011', 10],
+                ['TMH016', 16],
+                ['TMH017', 8.5],
+                ['TMH018', 12],
+                ['TMH019', 12],
+                ['TMH020', 8],
+                ['TMH021', 10],
+                ['TMH022', 15.5],
+                ['TMH023', 11],
+                ['TMH024', 9],
+                ['TMH025', 8],
+                ['TMH026', 8],
+                ['TMH027', 11.5],
+                ['TMH028', 12],
+                ['TMH029', 12],
+                ['XJ01', 8],
+                ['XJ02', 8],
+                ['XJ03', 8],
+                ['XJ04', 8],
+                ['XJ05', 12],
+                ['XJ06', 12],
+                ['XJ07', 12.5],
+                ['XJ08', 12.5],
+                ['XJA1', 8],
+                ['XJA10', 10],
+                ['XJA2', 8],
+                ['XJA3', 6],
+                ['XJA4', 10],
+                ['XJA5', 8],
+                ['XJA6', 12],
+                ['XJA8', 8],
+                ['XJA9', 10],
+                ['XJL1', 8],
+                ['XJL2', 8],
+                ['XJM1', 8],
+                ['XJM10', 10],
+                ['XJM11', 7],
+                ['XJM2', 8],
+                ['XJM3', 8],
+                ['XJM4', 11],
+                ['XJM5', 8],
+                ['XJM6', 8],
+                ['XJM7', 10],
+                ['XJM8', 10],
+                ['XJM9', 9],
+                ['XJN1', 8],
+                ['XJN10', 9],
+                ['XJN2', 12],
+                ['XJN3', 8],
+                ['XJN4', 10],
+                ['XJN4_OT', 10],
+                ['XJN5', 12],
+                ['XJN6', 14],
+                ['XJN7', 14],
+                ['XJN8', 8],
+                ['XJN9', 8],
+                ['XJNL1', 8],
+                ['YB008', 12],
+                ['YB009', 12],
+                ['YNHS12', 24]
+            ]),
+            
+            // 法定工作时间设置
+            LEGAL_WORK_DAYS_PER_MONTH: 23,
+            LEGAL_WORK_HOURS_PER_MONTH: 23 * 8,
+            
+            // DOM元素缓存
+            cachedElements: {
+                stats: {},
+                scheduleTable: null,
+                searchInput: null,
+                layer7Filter: null,
+                importBtn: null,
+                exportBtn: null,
+                saveBtn: null,
+                fileInput: null,
+                startDateInput: null,
+                daysCountInput: null,
+                employeesCountInput: null,
+                legalWorkDaysInput: null
+            },
+            
+            // 预创建的HTML片段
+            optionsHTML: '',
+            
+            // 搜索缓存
+            searchCache: {
+                rows: [],
+                searchData: []
+            },
+            
+            // 应用是否已初始化
+            initialized: false
+        };
+        
+        // 页面加载完成后初始化应用
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM加载完成，准备初始化应用');
+            // 添加一个短延迟，确保所有DOM元素都已渲染
+            setTimeout(async () => {
+                // 先获取法定工作天数
+                await SchedulingSystem.fetchLegalWorkDays();
+                // 然后初始化应用
+                SchedulingSystem.initApp();
+            }, 100);
+        });
+        
+        // 移除window.load事件中的重复初始化，DOMContentLoaded已经足够早
+        // 并确保应用只初始化一次
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6',
+                        secondary: '#64748b',
+                        success: '#22c55e',
+                        danger: '#ef4444',
+                        warning: '#f59e0b',
+                        info: '#0ea5e9',
+                        light: '#f8fafc',
+                        dark: '#1e293b',
+                    }
+                }
+            }
+        };
+        
+        // 动态获取当月法定应出勤天数
+        SchedulingSystem.fetchLegalWorkDays = async function() {
+            try {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = now.getMonth() + 1;
+                const cacheKey = `legal_work_days_${year}_${month}`;
+                const cacheExpiryKey = `${cacheKey}_expiry`;
+                
+                // 检查localStorage中是否有缓存数据及其有效期
+                const cachedData = localStorage.getItem(cacheKey);
+                const cacheExpiry = localStorage.getItem(cacheExpiryKey);
+                const nowTimestamp = Date.now();
+                
+                // 如果缓存存在且未过期（有效期为7天）
+                if (cachedData && cacheExpiry && nowTimestamp < parseInt(cacheExpiry)) {
+                    const workDays = parseInt(cachedData);
+                    this.LEGAL_WORK_DAYS_PER_MONTH = workDays;
+                    this.LEGAL_WORK_HOURS_PER_MONTH = workDays * 8;
+                    console.log(`从缓存获取当月法定应出勤天数: ${workDays}天，工时: ${this.LEGAL_WORK_HOURS_PER_MONTH}小时`);
+                    
+                    // 如果应用已经初始化，重新计算统计数据
+                    if (typeof this.StatisticsModule !== 'undefined') {
+                        this.StatisticsModule.updateStatistics();
+                    }
+                    return;
+                }
+                
+                // 如果没有缓存或缓存已过期，从API获取数据
+                const response = await fetch(`https://timor.tech/api/holiday/v1/list?year=${year}&month=${month}`);
+                const data = await response.json();
+                
+                if (data.code === 0) {
+                    // 获取当月天数
+                    const daysInMonth = new Date(year, month, 0).getDate();
+                    let workDays = 0;
+                    
+                    // 计算工作日数量（周一到周五，排除节假日）
+                    for (let day = 1; day <= daysInMonth; day++) {
+                        const date = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+                        const dayInfo = data.holiday[date];
+                        const dayOfWeek = new Date(year, month - 1, day).getDay();
+                        
+                        // 如果不是周末且不是节假日，则为工作日
+                        if (dayOfWeek !== 0 && dayOfWeek !== 6 && (!dayInfo || !dayInfo.holiday)) {
+                            workDays++;
+                        }
+                    }
+                    
+                    // 更新法定应出勤天数和工时
+                    this.LEGAL_WORK_DAYS_PER_MONTH = workDays;
+                    this.LEGAL_WORK_HOURS_PER_MONTH = workDays * 8;
+                    
+                    console.log(`从API获取当月法定应出勤天数: ${workDays}天，工时: ${this.LEGAL_WORK_HOURS_PER_MONTH}小时`);
+                    
+                    // 将数据缓存到localStorage，有效期为7天
+                    const expiryTime = nowTimestamp + (7 * 24 * 60 * 60 * 1000); // 7天
+                    localStorage.setItem(cacheKey, workDays.toString());
+                    localStorage.setItem(cacheExpiryKey, expiryTime.toString());
+                    
+                    // 如果应用已经初始化，重新计算统计数据
+                    if (typeof this.StatisticsModule !== 'undefined') {
+                        this.StatisticsModule.updateStatistics();
+                    }
+                }
+            } catch (error) {
+                console.error('获取法定工作日失败，使用默认值:', error);
+                // 保持默认值
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .cell-highlight {
+                background-color: #ef4444 !important;
+                color: white !important;
+                font-weight: bold !important;
+            }
+            .scrollbar-thin {
+                scrollbar-width: thin;
+            }
+            .scrollbar-thin::-webkit-scrollbar {
+                width: 6px;
+                height: 6px;
+            }
+            .scrollbar-thin::-webkit-scrollbar-track {
+                background: #f1f1f1;
+            }
+            .scrollbar-thin::-webkit-scrollbar-thumb {
+                background: #888;
+                border-radius: 3px;
+            }
+            .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+                background: #555;
+            }
+            .contain-paint {
+                contain: paint;
+            }
+            .contain-layout {
+                contain: layout;
+            }
+            .contain-size {
+                contain: size;
+            }
+            .contain-strict {
+                contain: strict;
+            }
+            /* 固定列阴影效果 */
+        .shadow-fix-column {
+            box-shadow: 0 0 8px rgba(0,0,0,0.15), 2px 0 8px rgba(0,0,0,0.15);
+            overflow: visible;
+            border-collapse: collapse;
+            margin: 0;
+            z-index: 100;
+        }
+        }
+    </style>
+    <style>
+        /* 渲染性能优化 */
+        #schedule-table {
+            contain: strict;
+            transform: translateZ(0); /* 启用硬件加速 */
+        }
+        #schedule-table tbody {
+            contain: layout size;
+        }
+        #schedule-table tr {
+            contain: layout;
+        }
+        #schedule-table select {
+            will-change: background-color, border-color;
+            transition: all 0.1s ease-out; /* 减少过渡效果的复杂度 */
+        }
+        /* 优化滚动性能 */
+        .scrollbar-thin {
+            scroll-behavior: smooth;
+        }
+        /* 优化固定定位元素 */
+        #schedule-table thead,
+        #schedule-table th.sticky,
+        #schedule-table td.sticky {
+            will-change: transform;
+            contain: paint;
+        }
+        
+        /* 修复固定列与表头的堆叠顺序问题 */
+        #schedule-table {
+            position: relative;
+            border-collapse: collapse;
+        }
+        
+        /* 确保表格容器支持滚动 */
+        #schedule-table-container {
+            overflow: auto;
+            max-height: 80vh;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        
+        /* 响应式设计：确保表格在不同屏幕尺寸下都能正常显示 */
+        @media (max-width: 1200px) {
+            #schedule-table {
+                font-size: 11px;
+            }
+            
+            #schedule-table th,
+            #schedule-table td {
+                padding: 0 1px;
+            }
+            
+            #schedule-table select {
+                padding: 2px;
+            }
+        }
+        
+        @media (max-width: 900px) {
+            #schedule-table {
+                font-size: 10px;
+            }
+            
+            #schedule-table th:nth-child(1) {
+                width: 60px;
+                left: 0;
+            }
+            
+            #schedule-table td:nth-child(1) {
+                width: 60px;
+                left: 0;
+            }
+            
+            #schedule-table th:nth-child(2) {
+                width: 120px;
+                left: 60px;
+            }
+            
+            #schedule-table td:nth-child(2) {
+                width: 120px;
+                left: 60px;
+            }
+            
+            /* 缩小统计列宽度 */
+            #schedule-table th:nth-last-child(6),
+            #schedule-table td:nth-last-child(6) {
+                width: 80px;
+            }
+            
+            #schedule-table th:nth-last-child(5),
+            #schedule-table td:nth-last-child(5) {
+                width: 60px;
+            }
+            
+            #schedule-table th:nth-last-child(4),
+            #schedule-table td:nth-last-child(4) {
+                width: 60px;
+            }
+            
+            #schedule-table th:nth-last-child(3),
+            #schedule-table td:nth-last-child(3) {
+                width: 60px;
+            }
+            
+            #schedule-table th:nth-last-child(2),
+            #schedule-table td:nth-last-child(2) {
+                width: 60px;
+            }
+            
+            #schedule-table th:nth-last-child(1),
+            #schedule-table td:nth-last-child(1) {
+                width: 80px;
+            }
+        }
+        
+        @media (max-width: 600px) {
+            #schedule-table {
+                font-size: 9px;
+            }
+            
+            #schedule-table-container {
+                max-height: 70vh;
+            }
+            
+            /* 进一步缩小固定列宽度 */
+            #schedule-table th:nth-child(1) {
+                width: 50px;
+                left: 0;
+            }
+            
+            #schedule-table td:nth-child(1) {
+                width: 50px;
+                left: 0;
+            }
+            
+            #schedule-table th:nth-child(2) {
+                width: 100px;
+                left: 50px;
+            }
+            
+            #schedule-table td:nth-child(2) {
+                width: 100px;
+                left: 50px;
+            }
+        }
+        
+        /* 表头固定在顶部 */
+        #schedule-table thead {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background-color: #e5e7eb;
+        }
+        
+        /* 表头的第一列固定在左侧 */
+        #schedule-table th:nth-child(1) {
+            position: sticky;
+            left: 0;
+            top: 0;
+            z-index: 103;
+            width: 75px;
+            height: 32px;
+            padding: 2px 4px;
+            background-color: #e5e7eb;
+            border-left: none;
+            border-right: 2px solid #d1d5db;
+            box-shadow: 3px 0 12px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        
+        /* 表头的第二列固定在左侧，位于第一列右侧 */
+        #schedule-table th:nth-child(2) {
+            position: sticky;
+            left: 75px;
+            top: 0;
+            z-index: 102;
+            width: 150px;
+            height: 32px;
+            padding: 2px 8px;
+            background-color: #e5e7eb;
+            border-right: 2px solid #d1d5db;
+            box-shadow: 3px 0 12px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        
+        /* 表体的第一列固定在左侧 */
+        #schedule-table td:nth-child(1) {
+            position: sticky;
+            left: 0;
+            z-index: 101;
+            width: 75px;
+            height: 32px;
+            padding: 2px 4px;
+            background-color: white;
+            border-left: none;
+            border-right: 2px solid #d1d5db;
+            box-shadow: 3px 0 12px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        
+        /* 表体的第二列固定在左侧，位于第一列右侧 */
+        #schedule-table td:nth-child(2) {
+            position: sticky;
+            left: 75px;
+            z-index: 100;
+            width: 150px;
+            height: 32px;
+            padding: 2px 8px;
+            background-color: white;
+            border-right: 2px solid #d1d5db;
+            box-shadow: 3px 0 12px rgba(0,0,0,0.2);
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        
+        /* 确保表格单元格没有间隙 */
+        #schedule-table {
+            border-collapse: collapse;
+            border-spacing: 0;
+            margin: 0;
+            padding: 0;
+            font-size: 12px;
+            line-height: 1.2;
+            width: 100%;
+        }
+        
+        #schedule-table td,
+        #schedule-table th {
+            padding: 0 2px;
+            margin: 0;
+            border: 1px solid #ddd;
+            box-sizing: border-box;
+            position: relative;
+            overflow: visible;
+            height: 32px;
+            white-space: nowrap;
+        }
+        
+        /* 确保选择框填满整个单元格 */
+        #schedule-table select {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: transparent;
+            box-sizing: border-box;
+            padding: 4px;
+            line-height: 1.4;
+        }
+        
+        /* 修复滚动时的背景色覆盖问题 */
+        #schedule-table tr {
+            background-color: white;
+        }
+        
+        #schedule-table thead tr {
+            background-color: #e5e7eb;
+        }
+        
+        /* 统计列固定宽度 */
+        #schedule-table th:nth-last-child(6),
+        #schedule-table td:nth-last-child(6) {
+            width: 110px;
+        }
+        
+        #schedule-table th:nth-last-child(5),
+        #schedule-table td:nth-last-child(5) {
+            width: 80px;
+        }
+        
+        #schedule-table th:nth-last-child(4),
+        #schedule-table td:nth-last-child(4) {
+            width: 80px;
+        }
+        
+        #schedule-table th:nth-last-child(3),
+        #schedule-table td:nth-last-child(3) {
+            width: 80px;
+        }
+        
+        #schedule-table th:nth-last-child(2),
+        #schedule-table td:nth-last-child(2) {
+            width: 80px;
+        }
+        
+        #schedule-table th:nth-last-child(1),
+        #schedule-table td:nth-last-child(1) {
+            width: 120px;
+        }
+        /* 排班选择框样式 */
+        .select-shift {
+            min-width: 150px;
+            max-width: 300px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
+            padding: 4px 8px;
+            margin: 0;
+            font-size: 12px;
+            height: 100%;
+            line-height: 1.4;
+            box-sizing: border-box;
+        }
+            /* 连续工作≥7天的选择框样式 */
+            .consecutive-work-highlight {
+                background-color: #fee2e2 !important;
+                border-color: #ef4444 !important;
+                font-weight: bold !important;
+                color: #dc2626 !important;
+            }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-gray-100 min-h-screen">
+    <div class="max-w-[95vw] mx-auto px-4 py-2">
+        <header class="mb-2 text-center">
+            <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 mb-2">员工排班系统</h1>
+            <p class="text-lg text-gray-600">连续工作≥7天的单元格将高亮显示，支持实时统计与可视化</p>
+        </header>
+
+        <div class="bg-white rounded-xl shadow-xl p-4 mb-2 transform transition-all duration-300 hover:shadow-2xl">
+            <div class="flex items-center justify-between flex-wrap gap-3 mb-4 overflow-x-auto" style="scrollbar-width: none;">
+                <!-- 隐藏滚动条 -->
+                <style>
+                    &::-webkit-scrollbar {
+                        display: none;
+                    }
+                </style>
+                <div class="flex items-center gap-2 flex-1 min-w-[220px]">
+                    <label for="start-date" class="font-medium text-gray-700 min-w-[75px]">开始日期:</label>
+                    <input type="date" id="start-date" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary flex-grow min-w-[120px]">
+                </div>
+                <div class="flex items-center gap-2 flex-1 min-w-[180px]">
+                    <label for="days-count" class="font-medium text-gray-700 min-w-[75px]">排期天数:</label>
+                    <input type="number" id="days-count" value="30" min="1" max="90" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary flex-grow">
+                </div>
+                <div class="flex items-center gap-2 flex-1 min-w-[180px]">
+                    <label for="employees-count" class="font-medium text-gray-700 min-w-[75px]">员工人数:</label>
+                    <input type="number" id="employees-count" value="10" min="1" max="200" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary flex-grow">
+                </div>
+                <div class="flex items-center gap-2 flex-1 min-w-[180px]">
+                    <label for="legal-work-days" class="font-medium text-gray-700 min-w-[85px]">应出勤天数:</label>
+                    <input type="number" id="legal-work-days" value="23" min="1" max="31" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary flex-grow">
+                </div>
+                <div class="flex items-center gap-2 flex-1 min-w-[300px]">
+                    <div class="flex items-center flex-grow">
+                        <label for="search-input" class="mr-2 font-medium text-gray-700 whitespace-nowrap">搜索员工:</label>
+                        <input type="text" id="search-input" placeholder="搜索员工..." class="border border-gray-300 rounded-md px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-primary flex-grow">
+                    </div>
+                    <div class="flex items-center flex-grow min-w-[150px]">
+                        <label for="layer7-filter" class="mr-2 font-medium text-gray-700 whitespace-nowrap">部门:</label>
+                        <select id="layer7-filter" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary flex-grow min-w-[100px]">
+                            <option value="">查看全部</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="flex flex-wrap gap-3 justify-center md:justify-start">
+                <button id="import-excel" class="bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-600 hover:to-cyan-700 text-white font-medium py-2 px-4 rounded-md transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center flex-grow md:flex-grow-0">
+                    <i class="fa fa-upload mr-2"></i>导入Excel
+                </button>
+                <button id="export-excel" class="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-medium py-2 px-4 rounded-md transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center flex-grow md:flex-grow-0">
+                    <i class="fa fa-download mr-2"></i>导出Excel
+                </button>
+                <button id="save-data" class="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white font-medium py-2 px-4 rounded-md transition-all duration-300 shadow-md hover:shadow-lg flex items-center justify-center flex-grow md:flex-grow-0">
+                    <i class="fa fa-save mr-2"></i>保存数据
+                </button>
+            </div>
+            <input type="file" id="file-input" accept=".xlsx, .xls, .csv" class="hidden">
+        </div>
+
+        <!-- 统计面板 -->
+        <div class="flex flex-nowrap mb-6 w-full px-1 overflow-hidden">
+            <!-- 连续上班统计 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden mr-1 sm:mr-2">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-exclamation-triangle text-yellow-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">连续上班</span>
+                </h3>
+                <div class="space-y-2 sm:space-y-3">
+                    <div class="grid grid-cols-2 gap-2 sm:gap-3">
+                        <div class="text-center">
+                            <div id="consecutive-7-days" class="text-sm sm:text-base md:text-lg font-bold text-red-600 mb-1 leading-tight align-middle">0</div>
+                            <div class="text-xs text-gray-600 whitespace-nowrap">≥ 7天</div>
+                        </div>
+                        <div class="text-center">
+                            <div id="consecutive-10-days" class="text-sm sm:text-base md:text-lg font-bold text-red-700 mb-1 leading-tight align-middle">0</div>
+                            <div class="text-xs text-gray-600 whitespace-nowrap">≥ 10天</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-600 space-y-1">
+                        <div class="flex justify-between">
+                            <span class="whitespace-nowrap">员工数:</span>
+                            <span id="total-employees" class="font-medium">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="whitespace-nowrap">关注比例:</span>
+                            <span id="attention-ratio" class="font-medium">0%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 班次分布统计 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden mr-1 sm:mr-2">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-pie-chart text-blue-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">班次分布</span>
+                </h3>
+                <div class="flex flex-col space-y-2 sm:space-y-3">
+                    <div class="flex items-center justify-between px-1">
+                        <span class="text-gray-600 min-w-[25px] text-xs">白班</span>
+                        <div id="day-shifts-count" class="text-sm sm:text-base md:text-lg font-bold text-blue-500 min-w-[30px] text-right leading-8">0</div>
+                    </div>
+                    <div class="flex items-center justify-between px-1">
+                        <span class="text-gray-600 min-w-[25px] text-xs">中班</span>
+                        <div id="mid-shifts-count" class="text-sm sm:text-base md:text-lg font-bold text-purple-500 min-w-[30px] text-right leading-8">0</div>
+                    </div>
+                    <div class="flex items-center justify-between px-1">
+                        <span class="text-gray-600 min-w-[25px] text-xs">夜班</span>
+                        <div id="night-shifts-count" class="text-sm sm:text-base md:text-lg font-bold text-indigo-500 min-w-[30px] text-right leading-8">0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 休息情况 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden mr-1 sm:mr-2">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-bed text-green-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">休息情况</span>
+                </h3>
+                <div class="text-center space-y-1 sm:space-y-2">
+                    <div>
+                        <div id="rest-days-count" class="text-sm sm:text-base md:text-lg font-bold text-green-500 mb-1 leading-8">0</div>
+                        <div class="text-xs text-gray-600 whitespace-nowrap">休息总天数</div>
+                    </div>
+                    <div class="inline-block px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs whitespace-nowrap">
+                        休息: <span id="rest-ratio" class="font-semibold">0%</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 工作负载统计 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden mr-1 sm:mr-2">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-balance-scale text-blue-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">工作负载</span>
+                </h3>
+                <div class="text-center space-y-1 sm:space-y-2">
+                    <div>
+                        <div id="avg-work-days" class="text-sm sm:text-base md:text-lg font-bold text-blue-500 mb-1 leading-8">0</div>
+                        <div class="text-xs text-gray-600 whitespace-nowrap">平均工作天</div>
+                    </div>
+                    <div class="inline-block px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs whitespace-nowrap">
+                        工作: <span id="work-ratio" class="font-semibold">0%</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 加班统计 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden mr-1 sm:mr-2">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-clock-o text-red-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">加班统计</span>
+                </h3>
+                <div class="space-y-1 sm:space-y-2">
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-600 text-xs whitespace-nowrap">>36h人数</span>
+                        <div id="overtime-36-hours" class="text-sm sm:text-base md:text-lg font-bold text-red-500 leading-8">0</div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-600 text-xs">占比</span>
+                        <div id="overtime-36-ratio" class="text-xs sm:text-sm font-medium text-red-500">0%</div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-600 text-xs whitespace-nowrap">>60h人数</span>
+                        <div id="overtime-60-hours" class="text-sm sm:text-base md:text-lg font-bold text-red-600 leading-8">0</div>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-600 text-xs">占比</span>
+                        <div id="overtime-60-ratio" class="text-xs sm:text-sm font-medium text-red-600">0%</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 实际FTE统计 -->
+            <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-2 sm:p-3 md:p-4 transform transition-all duration-300 hover:-translate-y-1 hover:shadow-md flex-grow flex-shrink basis-0 min-w-[120px] overflow-hidden">
+                <h3 class="text-xs sm:text-sm md:text-base font-semibold text-gray-800 mb-2 sm:mb-3 flex items-center justify-center">
+                    <i class="fa fa-calculator text-blue-500 mr-1 text-xs"></i>
+                    <span class="whitespace-nowrap">实际FTE</span>
+                </h3>
+                <div class="text-center space-y-1 sm:space-y-2">
+                    <div>
+                        <div id="actual-fte" class="text-sm sm:text-lg md:text-xl font-bold text-blue-500 mb-1 leading-8">0.0</div>
+                        <div class="text-xs text-gray-600 whitespace-nowrap">总出勤/应出勤</div>
+                    </div>
+                    <div class="inline-block px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs whitespace-nowrap">
+                        应出勤: <span id="required-work-hours" class="font-semibold">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 排班表 -->
+        <div class="bg-white rounded-xl shadow-xl overflow-hidden scrollbar-thin transition-all duration-300 overflow-x-auto overflow-y-auto max-h-[85vh] mt-0 p-0 m-0 border-0" id="schedule-table-container">
+            <table id="schedule-table" class="w-full border-collapse m-0 p-0 border-0">
+                <!-- 排班表将在这里动态生成 -->
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // 性能优化：工具函数
+        // 节流函数
+
+        // 更新layer7筛选器选项
+        SchedulingSystem.updateLayer7Filter = function() {
+            const cachedElements = this.cachedElements;
+            if (!cachedElements.layer7Filter) {
+                cachedElements.layer7Filter = document.getElementById('layer7-filter');
+                if (!cachedElements.layer7Filter) return;
+            }
+            
+            // 提取唯一的layer7值，包括空字符串
+            const layer7Values = Array.from(new Set(this.scheduleData.map(emp => emp.layer7)));
+            
+            // 获取当前选中的值，以便在更新后保持选中状态
+            const currentValue = cachedElements.layer7Filter.value;
+            
+            // 清空现有选项，保留"查看全部"选项
+            cachedElements.layer7Filter.innerHTML = '<option value="">查看全部</option>';
+            
+            // 添加唯一的layer7值作为选项
+            layer7Values.sort().forEach(value => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = value;
+                // 保持当前选中的值
+                if (value === currentValue) {
+                    option.selected = true;
+                }
+                cachedElements.layer7Filter.appendChild(option);
+            });
+        };
+        
+        // 应用layer7筛选器
+        SchedulingSystem.applyLayer7Filter = function() {
+            const cachedElements = this.cachedElements;
+            if (!cachedElements.layer7Filter || !cachedElements.scheduleTable) return;
+            
+            const selectedLayer7 = cachedElements.layer7Filter.value;
+            const tbody = cachedElements.scheduleTable.querySelector('tbody');
+            if (!tbody) return;
+            
+            const rows = tbody.querySelectorAll('tr');
+            rows.forEach(row => {
+                const employeeId = row.dataset.employeeId;
+                const employeeData = this.scheduleData.find(emp => emp.employeeId === employeeId);
+                
+                if (!employeeData) {
+                    row.style.display = 'none';
+                    return;
+                }
+                
+                if (!selectedLayer7 || employeeData.layer7 === selectedLayer7) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+            
+            // 更新统计面板，显示筛选后的数据
+            if (typeof this.StatisticsModule !== 'undefined') {
+                this.StatisticsModule.updateStatistics();
+            }
+        };
+        
+        // 重新绑定表格事件监听器
+        SchedulingSystem.rebindTableEventListener = function() {
+            const cachedElements = this.cachedElements;
+            if (!cachedElements.scheduleTable) {
+                cachedElements.scheduleTable = document.getElementById('schedule-table');
+                if (!cachedElements.scheduleTable) return;
+            }
+            
+            // 移除旧的监听器（如果存在）
+            if (typeof cachedElements.tableChangeListener === 'function') {
+                cachedElements.scheduleTable.removeEventListener('change', cachedElements.tableChangeListener);
+            }
+            
+            // 定义新的监听器函数
+            cachedElements.tableChangeListener = function(e) {
+                if (e.target.tagName === 'SELECT' && e.target.dataset.employeeId && e.target.dataset.dayIndex) {
+                    const empId = e.target.dataset.employeeId;
+                    const dayIndex = parseInt(e.target.dataset.dayIndex);
+                    const shiftId = e.target.value;
+                    // 使用已创建的shiftTypeMap提高查找效率
+                    const shift = SchedulingSystem.shiftTypeMap.get(shiftId);
+                    
+                    if (shift) {
+                        const employeeData = SchedulingSystem.scheduleData.find(d => d.employeeId === empId);
+                        if (employeeData && employeeData.schedule[dayIndex]) {
+                            employeeData.schedule[dayIndex] = shift;
+                            // 更新缓存的统计数据
+                            employeeData.stats = SchedulingSystem.calculateEmployeeStats(employeeData.schedule);
+                            
+                            // 更新当前行的统计数据
+                            const row = e.target.closest('tr');
+                            if (row) {
+                                SchedulingSystem.StatisticsModule.updateRowStatistics(row, employeeData);
+                                SchedulingSystem.StatisticsModule.updateConsecutiveHighlights(row, employeeData);
+                            }
+                            
+                            // 更新统计面板
+                            SchedulingSystem.StatisticsModule.updateStatistics();
+                        }
+                    }
+                }
+            };
+            
+            // 绑定新的监听器
+            cachedElements.scheduleTable.addEventListener('change', cachedElements.tableChangeListener);
+        };
+        
+        // 初始化应用
+        SchedulingSystem.initApp = function() {
+            // 检查应用是否已经初始化，防止重复调用
+            if (this.initialized) {
+                console.log('应用已初始化，跳过重复初始化');
+                return;
+            }
+            
+            try {
+                console.log('初始化排班系统...');
+                
+                // 标记应用已初始化
+                this.initialized = true;
+                
+                // 添加加载指示器
+                const loadingIndicator = document.createElement('div');
+                loadingIndicator.id = 'loading-indicator';
+                loadingIndicator.className = 'fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center';
+                loadingIndicator.innerHTML = '<div class="bg-white p-8 rounded-lg shadow-xl flex flex-col items-center"><i class="fa fa-spinner fa-spin text-4xl text-blue-500 mb-4"></i><p class="text-lg">系统初始化中...</p></div>';
+                document.body.appendChild(loadingIndicator);
+                
+                // 直接执行初始化代码，确保所有元素都能正确加载
+                try {
+                    // 初始化班次数据
+                    this.initShiftTypes();
+                    console.log('班次数据初始化完成');
+                    
+                    // 绑定事件
+                    this.bindEvents();
+                    console.log('事件绑定完成');
+                    
+                    // 设置默认日期
+                    this.setDefaultDate();
+                    console.log('默认日期设置完成');
+                    
+                    // 检查保存的数据
+                    this.checkSavedData();
+                    console.log('检查保存的数据完成');
+                    
+                    // 移除加载指示器
+                    setTimeout(() => {
+                        loadingIndicator.style.opacity = '0';
+                        loadingIndicator.style.transition = 'opacity 0.5s';
+                        setTimeout(() => {
+                            if (loadingIndicator.parentNode) {
+                                document.body.removeChild(loadingIndicator);
+                            }
+                        }, 500);
+                    }, 500);
+                    
+                    console.log('初始化完成！');
+                } catch (error) {
+                    console.error('初始化过程中出错:', error);
+                    // 移除加载指示器
+                    if (loadingIndicator.parentNode) {
+                        document.body.removeChild(loadingIndicator);
+                    }
+                    alert('系统初始化出错: ' + error.message);
+                }
+            } catch (error) {
+                console.error('调用initApp时出错:', error);
+                alert('系统初始化失败: ' + error.message);
+            }
+        };
+
+        // 初始化班次数据
+        SchedulingSystem.initShiftTypes = function() {
+            this.shiftTypes = [
+                { id: "REST", name: "休息", color: "#22c55e" },
+                { id: "XJM1", name: "早班1(10:00~18:00)", color: "#3b82f6" },
+                { id: "XJM2", name: "早班2(09:00~18:00)", color: "#3b82f6" },
+                { id: "XJM3", name: "早班3(08:00~16:00)", color: "#3b82f6" },
+                { id: "XJM4", name: "早班4(07:30~18:30)", color: "#6366f1" },
+                { id: "XJM5", name: "早班5(09:00~17:00)", color: "#3b82f6" },
+                { id: "XJM6", name: "早班6(10:00~19:00)", color: "#3b82f6" },
+                { id: "XJM7", name: "早班7(08:30~19:30)", color: "#6366f1" },
+                { id: "XJM8", name: "早班8(07:30~17:30)", color: "#3b82f6" },
+                { id: "XJM9", name: "早班9(08:30~17:30)", color: "#3b82f6" },
+                { id: "XJM10", name: "早班10（06:00~16:00）", color: "#3b82f6" },
+                { id: "XJM11", name: "早班11(09:00~16:00)", color: "#3b82f6" },
+                { id: "XJA1", name: "中班1(18:00~*02:00)", color: "#8b5cf6" },
+                { id: "XJA2", name: "中班2(16:00~24:00)", color: "#f59e0b" },
+                { id: "XJA3", name: "中班3(18:00~24:00)", color: "#f59e0b" },
+                { id: "XJA4", name: "中班4(18:00~*04:00)", color: "#8b5cf6" },
+                { id: "XJA5", name: "中班5(17:00~*01:00)", color: "#8b5cf6" },
+                { id: "XJA6", name: "中班6(09:00~21:00)", color: "#6366f1" },
+                { id: "XJA8", name: "中班8(15:30~23:30)（已停用）", color: "#94a3b8" },
+                { id: "XJA9", name: "中班9(16:00~*02:00)", color: "#8b5cf6" },
+                { id: "XJA10", name: "中班10（17：30~*03：30）", color: "#8b5cf6" },
+                { id: "XJN1", name: "晚班1(02:00~10:00)", color: "#8b5cf6" },
+                { id: "XJN2", name: "晚班2(21:00~09:00)", color: "#8b5cf6" },
+                { id: "XJN3", name: "晚班3(00:00~08:00)", color: "#8b5cf6" },
+                { id: "XJN4", name: "晚班4(00:00~10:00)", color: "#8b5cf6" },
+                { id: "XJN5", name: "晚班5(22:00~*10:00)", color: "#8b5cf6" },
+                { id: "XJN6", name: "门卫-晚班(19:00~*09:00)（已停用）", color: "#94a3b8" },
+                { id: "XJN7", name: "门卫-晚班2(19:30~*09:30)（已停用）", color: "#94a3b8" },
+                { id: "XJN8", name: "晚班6(01:00~09:00)", color: "#8b5cf6" },
+                { id: "XJN9", name: "晚班9(23:30~*07:30)（已停用）", color: "#94a3b8" },
+                { id: "XJN10", name: "晚班10（00:00~09:00）", color: "#8b5cf6" },
+                { id: "XJ01", name: "常日班1(10:00~14:00-15:00~19:00)", color: "#3b82f6" },
+                { id: "XJ02", name: "常日班2(10:00~14:00-15:30~19:30)", color: "#3b82f6" },
+                { id: "XJ03", name: "常日班3(09:30~13:30-15:00~19:00)", color: "#3b82f6" },
+                { id: "XJ04", name: "常日班4(09:30~13:30-15:30~19:30)", color: "#3b82f6" },
+                { id: "XJ05", name: "常日班5(09:00~22:00)", color: "#6366f1" },
+                { id: "XJ06", name: "常日班6(10:00~23:00)", color: "#6366f1" },
+                { id: "XJ07", name: "常日班7(07:30~21:00)", color: "#6366f1" },
+                { id: "XJ08", name: "常日班8(08:30~22:00)", color: "#6366f1" },
+                { id: "XJL1", name: "计划物流部发货1(09:30~17:30)(已停用）", color: "#94a3b8" },
+                { id: "XJL2", name: "计划物流部发货2(10:00~18:00)（已停用）", color: "#94a3b8" },
+                { id: "XJNL1", name: "晚班连班1(02:00~10:00)(已停用）", color: "#94a3b8" },
+                { id: "XJN4_OT", name: "晚班4（加班）(00:00~10:00)（已停用）", color: "#94a3b8" },
+                { id: "YB008", name: "宜宾 中班 (08:30~20:30)", color: "#f59e0b" },
+                { id: "YB009", name: "宜宾 夜班 (20:30~08:30)", color: "#8b5cf6" },
+                { id: "YNHS12", name: "转班班次(0:30~*24:30)", color: "#6366f1" },
+                { id: "LX45", name: "澧县包装日班2(7:00~19:00)", color: "#3b82f6" },
+                { id: "LX46", name: "澧县包装晚班1(18:00~6:00)", color: "#8b5cf6" },
+                { id: "LX47", name: "澧县包装晚班2(19:00~07:00)", color: "#8b5cf6" },
+                { id: "TD009", name: "天岛-白班3(8:00~12:00)", color: "#3b82f6" },
+                { id: "TD010", name: "天岛-白班4(13:00~17:00)", color: "#3b82f6" },
+                { id: "TD011", name: "天岛-白班5(8:30~18:30)", color: "#3b82f6" },
+                { id: "TMH016", name: "夜班倒中班（00:00~08:00,16:00~00:00)", color: "#6366f1" },
+                { id: "TMH017", name: "天目湖 白班4(07:00~11:30,13:00~17:00)", color: "#3b82f6" },
+                { id: "TMH018", name: "天目湖 包装白班1(08:00~20:00)", color: "#3b82f6" },
+                { id: "TMH019", name: "天目湖 包装晚班1(20:00~08:00)", color: "#8b5cf6" },
+                { id: "TMH020", name: "天目湖 质量部白班1(05:00~13:00)", color: "#3b82f6" },
+                { id: "TMH021", name: "天目湖 质量部白班2(06:00~16:00)", color: "#3b82f6" },
+                { id: "TMH022", name: "天目湖 计划物流班1(05:00~11:30,13:00~22:00)", color: "#6366f1" },
+                { id: "TMH023", name: "天目湖 计划物流班2(06:00~12:00,13:00~18:00)", color: "#3b82f6" },
+                { id: "TMH024", name: "天目湖 维修班(06:30~15:30)", color: "#3b82f6" },
+                { id: "TMH025", name: "天目湖 淡季电工轮休生产跟班1(05:30~13:30)", color: "#3b82f6" },
+                { id: "TMH026", name: "天目湖 淡季电工轮休生产跟班2(09:30-17:30)", color: "#3b82f6" },
+                { id: "TMH027", name: "天目湖 包装白班2(06:30~18:00)", color: "#3b82f6" },
+                { id: "TMH028", name: "天目湖 技术质量部白班1(08:00~20:00)", color: "#3b82f6" },
+                { id: "TMH029", name: "天目湖 技术质量部晚班1(20:00~08:00)", color: "#8b5cf6" }
+            ];
+
+            this.workShifts = this.shiftTypes.filter(shift => shift.id !== "REST");
+            
+            // 创建班次类型Map，用于快速查找
+            this.shiftTypeMap = new Map(this.shiftTypes.map(shift => [shift.id, shift]));
+            
+            // 预创建班次选项HTML字符串，只创建一次
+            this.optionsHTML = '';
+            for (const type of this.shiftTypes) {
+                this.optionsHTML += `<option value="${type.id}">${type.id} - ${type.name}</option>`;
+            }
+        };
+
+        // 绑定事件
+        SchedulingSystem.bindEvents = function() {
+            console.log('绑定事件...');
+            
+            // 缓存常用DOM元素
+            const cachedElements = this.cachedElements;
+            cachedElements.scheduleTable = document.getElementById('schedule-table');
+            cachedElements.searchInput = document.getElementById('search-input');
+            cachedElements.importBtn = document.getElementById('import-excel');
+            cachedElements.exportBtn = document.getElementById('export-excel');
+            cachedElements.saveBtn = document.getElementById('save-data');
+            cachedElements.fileInput = document.getElementById('file-input');
+            cachedElements.startDateInput = document.getElementById('start-date');
+            cachedElements.daysCountInput = document.getElementById('days-count');
+            cachedElements.employeesCountInput = document.getElementById('employees-count');
+            cachedElements.legalWorkDaysInput = document.getElementById('legal-work-days');
+            
+            // 设置应出勤天数输入框的初始值
+            if (cachedElements.legalWorkDaysInput) {
+                cachedElements.legalWorkDaysInput.value = this.LEGAL_WORK_DAYS_PER_MONTH;
+            }
+            
+            // 为天数和员工数量输入框绑定事件
+            if (cachedElements.daysCountInput) {
+                cachedElements.daysCountInput.addEventListener('change', () => {
+                    const days = parseInt(cachedElements.daysCountInput.value);
+                    if (days > 0) {
+                        const startDate = new Date(cachedElements.startDateInput.value || new Date());
+                        this.renderScheduleTable(startDate, days);
+                    }
+                });
+            }
+            
+            if (cachedElements.employeesCountInput) {
+                cachedElements.employeesCountInput.addEventListener('change', () => {
+                    const employeesCount = parseInt(cachedElements.employeesCountInput.value);
+                    if (employeesCount > 0) {
+                        const startDate = new Date(cachedElements.startDateInput.value || new Date());
+                        const daysCount = parseInt(cachedElements.daysCountInput.value || 0);
+                        if (daysCount > 0) {
+                            this.renderScheduleTable(startDate, daysCount);
+                        }
+                    }
+                });
+            }
+            
+            // 为导入按钮绑定点击事件
+            if (cachedElements.importBtn) {
+                cachedElements.importBtn.addEventListener('click', () => {
+                    console.log('导入Excel按钮被点击');
+                    if (cachedElements.fileInput) {
+                        cachedElements.fileInput.click();
+                    }
+                });
+            }
+            
+            // 为文件输入框绑定change事件
+            if (cachedElements.fileInput) {
+                cachedElements.fileInput.addEventListener('change', (e) => {
+                    console.log('文件上传事件触发');
+                    this.handleFileUpload(e);
+                });
+            }
+            
+            // 为导出按钮绑定点击事件
+            if (cachedElements.exportBtn) {
+                cachedElements.exportBtn.addEventListener('click', () => {
+                    console.log('导出Excel按钮被点击');
+                    this.handleExportExcel();
+                });
+            }
+            
+            // 为保存按钮绑定点击事件
+            if (cachedElements.saveBtn) {
+                cachedElements.saveBtn.addEventListener('click', () => {
+                    console.log('保存数据按钮被点击');
+                    this.handleSaveData();
+                });
+            }
+            
+            // 为搜索输入框绑定事件
+            if (cachedElements.searchInput) {
+                cachedElements.searchInput.addEventListener('input', (e) => {
+                    const searchTerm = e.target.value;
+                    this.handleSearch(searchTerm);
+                });
+            }
+            
+            // 为应出勤天数输入框绑定事件
+            if (cachedElements.legalWorkDaysInput) {
+                cachedElements.legalWorkDaysInput.addEventListener('change', () => {
+                    const workDays = parseInt(cachedElements.legalWorkDaysInput.value);
+                    if (!isNaN(workDays) && workDays >= 1 && workDays <= 31) {
+                        this.LEGAL_WORK_DAYS_PER_MONTH = workDays;
+                        this.LEGAL_WORK_HOURS_PER_MONTH = workDays * 8;
+                        console.log(`应出勤天数已更新: ${workDays}天，工时: ${this.LEGAL_WORK_HOURS_PER_MONTH}小时`);
+                        
+                        // 重新计算所有员工的统计数据
+                        this.scheduleData.forEach(employee => {
+                            employee.stats = this.calculateEmployeeStats(employee.schedule);
+                        });
+                        
+                        // 更新表格显示
+                        this.StatisticsModule.updateAllStatistics();
+                    }
+                });
+            }
+            
+            // 为开始日期输入框绑定事件
+            if (cachedElements.startDateInput) {
+                cachedElements.startDateInput.addEventListener('change', () => {
+                    const startDate = new Date(cachedElements.startDateInput.value);
+                    const daysCount = parseInt(cachedElements.daysCountInput.value || 0);
+                    if (daysCount > 0) {
+                        this.renderScheduleTable(startDate, daysCount);
+                    }
+                });
+            }
+            
+            // 缓存统计面板元素
+            cachedElements.stats = {
+                consecutive7Days: document.getElementById('consecutive-7-days'),
+                consecutive10Days: document.getElementById('consecutive-10-days'),
+                totalEmployees: document.getElementById('total-employees'),
+                attentionRatio: document.getElementById('attention-ratio'),
+                dayShiftsCount: document.getElementById('day-shifts-count'),
+                midShiftsCount: document.getElementById('mid-shifts-count'),
+                nightShiftsCount: document.getElementById('night-shifts-count'),
+                restDaysCount: document.getElementById('rest-days-count'),
+                restRatio: document.getElementById('rest-ratio'),
+                avgWorkDays: document.getElementById('avg-work-days'),
+                workRatio: document.getElementById('work-ratio'),
+                // 加班统计元素
+                overtime36Hours: document.getElementById('overtime-36-hours'),
+                overtime60Hours: document.getElementById('overtime-60-hours'),
+                overtime36Ratio: document.getElementById('overtime-36-ratio'),
+                overtime60Ratio: document.getElementById('overtime-60-ratio'),
+                // 实际FTE统计元素
+                actualFte: document.getElementById('actual-fte'),
+                requiredWorkHours: document.getElementById('required-work-hours')
+            };
+            
+            // 使用rebindTableEventListener函数绑定表格change事件
+            this.rebindTableEventListener();
+
+            // 为layer7筛选器绑定change事件
+            cachedElements.layer7Filter = document.getElementById('layer7-filter');
+            if (cachedElements.layer7Filter) {
+                cachedElements.layer7Filter.addEventListener('change', () => {
+                    console.log('layer7筛选器变化');
+                    this.applyLayer7Filter();
+                });
+            }
+
+            // 页面关闭前提示
+            window.addEventListener('beforeunload', (e) => {
+                if (this.scheduleData.length > 0) {
+                    const message = '您有未保存的排班数据，确定要离开吗？';
+                    e.returnValue = message;
+                    return message;
+                }
+            });
+        };
+
+        // 设置默认日期
+        SchedulingSystem.setDefaultDate = function() {
+            const today = new Date();
+            const formattedDate = today.toISOString().split('T')[0];
+            
+            // 使用缓存的元素
+            const cachedElements = this.cachedElements;
+            if (!cachedElements.startDateInput) {
+                cachedElements.startDateInput = document.getElementById('start-date');
+            }
+            
+            if (cachedElements.startDateInput) {
+                cachedElements.startDateInput.value = formattedDate;
+            }
+        };
+
+
+
+        // 渲染排班表表头
+        SchedulingSystem.renderTableHeader = function(startDate, daysCount) {
+            // 使用缓存的表格元素
+            const cachedElements = this.cachedElements;
+            if (!cachedElements.scheduleTable) {
+                cachedElements.scheduleTable = document.getElementById('schedule-table');
+            }
+            
+            const scheduleTable = cachedElements.scheduleTable;
+            if (!scheduleTable) {
+                console.error('找不到排班表元素');
+                return;
+            }
+
+            // 清空表格
+            while (scheduleTable.firstChild) {
+                scheduleTable.removeChild(scheduleTable.firstChild);
+            }
+
+            // 创建表头
+            const thead = document.createElement('thead');
+            thead.style.position = 'sticky';
+            thead.style.top = '0';
+            thead.style.zIndex = '2000';
+            thead.style.backgroundColor = '#e5e7eb';
+            thead.style.borderCollapse = 'collapse';
+            thead.style.overflow = 'visible';
+            thead.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+            thead.style.borderBottom = '2px solid #d1d5db';
+            const headerRow = document.createElement('tr');
+            headerRow.className = 'bg-gray-200';
+            
+            // 添加员工编码列 - 固定列
+            const employeeIdHeader = document.createElement('th');
+            employeeIdHeader.className = 'border border-gray-300 px-0 py-2 text-left bg-gray-200 shadow-fix-column';
+            employeeIdHeader.style.width = '75px';
+            employeeIdHeader.style.minWidth = '75px';
+            employeeIdHeader.style.padding = '2px 4px';
+            employeeIdHeader.textContent = '员工编码';
+            headerRow.appendChild(employeeIdHeader);
+            
+            // 添加姓名列 - 固定列
+            const employeeNameHeader = document.createElement('th');
+            employeeNameHeader.className = 'border border-gray-300 px-0 py-2 text-left bg-gray-200 shadow-fix-column';
+            employeeNameHeader.style.width = '150px';
+            employeeNameHeader.style.minWidth = '150px';
+            employeeNameHeader.style.padding = '2px 8px';
+            employeeNameHeader.textContent = '姓名';
+            headerRow.appendChild(employeeNameHeader);
+            
+            // 添加分组列 - 非固定列
+            const groupHeader = document.createElement('th');
+            groupHeader.className = 'border border-gray-300 px-3 py-2 text-left bg-gray-200';
+            groupHeader.style.width = '50px';
+            groupHeader.style.minWidth = '50px';
+            groupHeader.style.verticalAlign = 'middle';
+            groupHeader.textContent = '分组';
+            headerRow.appendChild(groupHeader);
+            
+            // 添加第1层至第10层列
+            for (let i = 1; i <= 10; i++) {
+                const layerHeader = document.createElement('th');
+                layerHeader.className = 'border border-gray-300 px-2 py-2 text-center';
+                layerHeader.style.width = '50px';
+                layerHeader.style.minWidth = '50px';
+                layerHeader.style.verticalAlign = 'middle';
+                layerHeader.textContent = `第${i}层`;
+                headerRow.appendChild(layerHeader);
+            }
+
+            // 添加日期列
+            const datesFragment = document.createDocumentFragment();
+            for (let i = 0; i < daysCount; i++) {
+                const currentDate = new Date(startDate);
+                currentDate.setDate(startDate.getDate() + i);
+
+                const dateHeader = document.createElement('th');
+                dateHeader.className = 'border border-gray-300 px-3 py-2 text-center';
+                dateHeader.style.minWidth = '100px';
+                dateHeader.style.verticalAlign = 'middle';
+                
+                // 显示日期和星期
+                const dateStr = currentDate.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+                const weekDayStr = currentDate.toLocaleDateString('zh-CN', { weekday: 'short' });
+                dateHeader.innerHTML = `<div>${dateStr}</div><div class="text-xs text-gray-500">${weekDayStr}</div>`;
+                
+                datesFragment.appendChild(dateHeader);
+            }
+            headerRow.appendChild(datesFragment);
+            
+            // 添加统计列标题
+            const statHeaders = [
+                { text: '最高连续上班天数', className: 'font-bold' },
+                { text: '白班天数', className: '' },
+                { text: '中班天数', className: '' },
+                { text: '夜班天数', className: '' },
+                { text: '总上班天数', className: '' },
+                { text: '总出勤小时数', className: '' }
+            ];
+            
+            statHeaders.forEach(stat => {
+                const header = document.createElement('th');
+                header.className = `border border-gray-300 px-3 py-2 text-center ${stat.className}`;
+                header.style.verticalAlign = 'middle';
+                header.textContent = stat.text;
+                headerRow.appendChild(header);
+            });
+            
+            thead.appendChild(headerRow);
+            scheduleTable.appendChild(thead);
+        };
+
+
+
+        // 渲染排班表
+        SchedulingSystem.renderScheduleTable = function(startDate, daysCount) {
+            console.log('渲染排班表，天数:', daysCount);
+            
+            const cachedElements = this.cachedElements;
+            
+            // 渲染表头
+            this.renderTableHeader(startDate, daysCount);
+            
+            // 渲染表格内容
+            const tbody = document.createElement('tbody');
+            const fragment = document.createDocumentFragment(); // 创建文档片段
+            
+            if (this.scheduleData.length > 0) {
+                // 只有当scheduleData有数据时才渲染表格内容
+                this.scheduleData.forEach((employeeData, empIndex) => {
+                    const employeeRow = document.createElement('tr');
+                    employeeRow.dataset.employeeId = employeeData.employeeId;
+                    employeeRow.dataset.employeeIndex = empIndex;
+                    
+                    // 创建员工ID单元格
+                    const idCell = document.createElement('td');
+                    idCell.className = 'border border-gray-300 px-0 py-0 text-left bg-white shadow-fix-column';
+                    idCell.style.width = '75px';
+                    idCell.style.minWidth = '75px';
+                    idCell.style.padding = '2px 4px';
+                    idCell.style.height = '32px';
+                    idCell.style.verticalAlign = 'middle';
+                    idCell.textContent = employeeData.employeeId;
+                    employeeRow.appendChild(idCell);
+                    
+                    // 创建员工姓名单元格
+                    const nameCell = document.createElement('td');
+                    nameCell.className = 'border border-gray-300 px-0 py-0 text-left bg-white shadow-fix-column';
+                    nameCell.style.width = '150px';
+                    nameCell.style.minWidth = '150px';
+                    nameCell.style.padding = '2px 8px';
+                    nameCell.style.height = '32px';
+                    nameCell.style.verticalAlign = 'middle';
+                    nameCell.textContent = employeeData.employeeName;
+                    employeeRow.appendChild(nameCell);
+                    
+                    // 创建分组单元格
+                    const groupCell = document.createElement('td');
+                    groupCell.className = 'border border-gray-300 px-2 py-0 text-center w-12';
+                    groupCell.style.width = '50px';
+                    groupCell.style.minWidth = '50px';
+                    groupCell.textContent = employeeData.group;
+                    employeeRow.appendChild(groupCell);
+                    
+                    // 创建第1-10层单元格
+                    for (let i = 1; i <= 10; i++) {
+                        const layerCell = document.createElement('td');
+                        layerCell.className = 'border border-gray-300 px-2 py-0 text-center';
+                        layerCell.style.width = '50px';
+                        layerCell.style.minWidth = '50px';
+                        layerCell.textContent = employeeData[`layer${i}`] || '';
+                        employeeRow.appendChild(layerCell);
+                    }
+                    
+                    // 创建排班单元格
+                    employeeData.schedule.forEach((shift, dayIndex) => {
+                        const scheduleCell = document.createElement('td');
+                        scheduleCell.className = 'border border-gray-300 px-0 py-0 text-center';
+                        scheduleCell.style.padding = '0';
+                        scheduleCell.style.margin = '0';
+                        
+                        const select = document.createElement('select');
+                        select.className = 'select-shift w-full h-full border rounded-none p-0 m-0 text-xs';
+                        select.dataset.employeeId = employeeData.employeeId;
+                        select.dataset.dayIndex = dayIndex;
+                        select.style.width = '100%';
+                        select.style.height = '100%';
+                        select.style.border = 'none';
+                        select.style.margin = '0';
+                        select.style.padding = '0 2px';
+                        select.style.boxSizing = 'border-box';
+                        
+                        // 使用预创建的optionsHTML减少DOM操作
+                        select.innerHTML = this.optionsHTML;
+                        // 设置默认选中项
+                        select.value = shift.id;
+                        
+                        // 添加连续工作高亮
+                        if (employeeData.stats && employeeData.stats.dailyConsecutiveDays && 
+                            employeeData.stats.dailyConsecutiveDays[dayIndex] >= 7) {
+                            select.classList.add('consecutive-work-highlight');
+                        }
+                        
+                        scheduleCell.appendChild(select);
+                        employeeRow.appendChild(scheduleCell);
+                    });
+                    
+                    // 创建统计单元格
+                    const stats = employeeData.stats;
+                    
+                    // 最高连续上班天数
+                    const maxConsecutiveCell = document.createElement('td');
+                    maxConsecutiveCell.className = 'border border-gray-300 px-3 py-0 text-center font-bold';
+                    maxConsecutiveCell.style.verticalAlign = 'middle';
+                    maxConsecutiveCell.style.height = '32px';
+                    maxConsecutiveCell.textContent = stats.maxConsecutive;
+                    if (stats.maxConsecutive >= 7) {
+                        maxConsecutiveCell.style.backgroundColor = '#fee2e2';
+                        maxConsecutiveCell.style.color = '#dc2626';
+                    }
+                    employeeRow.appendChild(maxConsecutiveCell);
+                    
+                    // 白班天数
+                    const dayShiftCell = document.createElement('td');
+                    dayShiftCell.className = 'border border-gray-300 px-3 py-0 text-center';
+                    dayShiftCell.style.verticalAlign = 'middle';
+                    dayShiftCell.style.height = '32px';
+                    dayShiftCell.textContent = stats.dayShift;
+                    employeeRow.appendChild(dayShiftCell);
+                    
+                    // 中班天数
+                    const midShiftCell = document.createElement('td');
+                    midShiftCell.className = 'border border-gray-300 px-3 py-0 text-center';
+                    midShiftCell.style.verticalAlign = 'middle';
+                    midShiftCell.style.height = '32px';
+                    midShiftCell.textContent = stats.midShift;
+                    employeeRow.appendChild(midShiftCell);
+                    
+                    // 夜班天数
+                    const nightShiftCell = document.createElement('td');
+                    nightShiftCell.className = 'border border-gray-300 px-3 py-0 text-center';
+                    nightShiftCell.style.verticalAlign = 'middle';
+                    nightShiftCell.style.height = '32px';
+                    nightShiftCell.textContent = stats.nightShift;
+                    employeeRow.appendChild(nightShiftCell);
+                    
+                    // 总上班天数
+                    const totalWorkDaysCell = document.createElement('td');
+                    totalWorkDaysCell.className = 'border border-gray-300 px-3 py-0 text-center';
+                    totalWorkDaysCell.style.verticalAlign = 'middle';
+                    totalWorkDaysCell.style.height = '32px';
+                    totalWorkDaysCell.textContent = stats.totalWorkDays;
+                    employeeRow.appendChild(totalWorkDaysCell);
+                    
+                    // 总出勤小时数
+                    const totalWorkHoursCell = document.createElement('td');
+                    totalWorkHoursCell.className = 'border border-gray-300 px-3 py-0 text-center';
+                    totalWorkHoursCell.style.verticalAlign = 'middle';
+                    totalWorkHoursCell.style.height = '32px';
+                    totalWorkHoursCell.textContent = stats.totalWorkHours.toFixed(1);
+                    employeeRow.appendChild(totalWorkHoursCell);
+                    
+                    fragment.appendChild(employeeRow); // 将行添加到文档片段
+                });
+            }
+            
+            tbody.appendChild(fragment); // 将文档片段一次性添加到tbody
+            
+            // 先清空表格的现有tbody，再添加新的tbody
+            const existingTbody = cachedElements.scheduleTable.querySelector('tbody');
+            if (existingTbody) {
+                cachedElements.scheduleTable.removeChild(existingTbody);
+            }
+            
+            // 添加tbody到表格
+            cachedElements.scheduleTable.appendChild(tbody);
+            
+            // 更新统计数据
+            this.StatisticsModule.updateStatistics();
+            
+            // 初始化搜索缓存
+            this.initSearchCache();
+            
+            // 更新layer7筛选器
+            this.updateLayer7Filter();
+            
+            // 应用layer7筛选器
+            this.applyLayer7Filter();
+            
+            // 重新绑定表格事件监听器，确保修改操作能正确触发统计更新
+            this.rebindTableEventListener();
+        };
+
+        // 计算员工统计数据
+        SchedulingSystem.calculateEmployeeStats = function(schedule) {
+            let consecutiveWorkDays = 0;
+            let maxConsecutiveWorkDays = 0;
+            let dayShift = 0;
+            let midShift = 0;
+            let nightShift = 0;
+            // 新增：总上班天数和总出勤小时数
+            let totalWorkDays = 0;
+            let totalWorkHours = 0;
+            // 新增：保存每天的连续工作天数，用于样式更新
+            const dailyConsecutiveDays = [];
+
+            schedule.forEach(shift => {
+                // 首先将所有非REST班次视为工作班次
+                const isWorkShift = shift.id !== 'REST';
+                const shiftName = shift.name.toLowerCase();
+                
+                // 或者班次ID明确表示为休息
+                const isRest = shift.id === 'REST';
+                
+                if (isWorkShift) {
+                    consecutiveWorkDays++;
+                    maxConsecutiveWorkDays = Math.max(maxConsecutiveWorkDays, consecutiveWorkDays);
+                    totalWorkDays++;
+                    // 根据班次ID获取工时，确保所有班次都能被识别
+                    let shiftHours = this.shiftHoursMap.get(shift.id);
+                    if (shiftHours === undefined) {
+                        // 尝试匹配班次名称
+                        const shiftName = shift.name.toLowerCase();
+                        if (shiftName.includes('夜') || shiftName.includes('night')) {
+                            shiftHours = 12; // 默认夜班12小时
+                        } else if (shiftName.includes('中') || shiftName.includes('afternoon')) {
+                            shiftHours = 8; // 默认中班8小时
+                        } else if (shiftName.includes('白') || shiftName.includes('day') || shiftName.includes('morning')) {
+                            shiftHours = 8; // 默认白班8小时
+                        } else {
+                            shiftHours = 8; // 默认工时8小时
+                        }
+                        console.warn(`班次${shift.id}(${shift.name})未在shiftHoursMap中定义，使用默认工时${shiftHours}小时`);
+                    }
+                    totalWorkHours += shiftHours;
+                    
+                    // 根据班次名称和ID判断班次类型 - 使用更精确的逻辑确保每个班次只属于一个类别
+                    let shiftCategory = 'unknown';
+                    
+                    // 首先根据班次ID的命名规则判断
+                    // 检查是否为夜班 (N 通常代表夜班)
+                    if (shift.id.includes('N') || shift.id.includes('夜') || shift.id.includes('night')) {
+                        shiftCategory = 'night';
+                    } 
+                    // 检查是否为中班 (A 通常代表中班/晚班)
+                    else if (shift.id.includes('A') || shift.id.includes('中') || shift.id.includes('afternoon')) {
+                        shiftCategory = 'mid';
+                    } 
+                    // 检查是否为白班/早班 (M 通常代表早班/白班)
+                    else if (shift.id.includes('M') || shift.id.includes('白') || shift.id.includes('日') || shift.id.includes('早') || shift.id.includes('morning')) {
+                        shiftCategory = 'day';
+                    } 
+                    // 如果ID无法判断，再根据名称判断
+                    else {
+                        // 优先级：夜班 > 中班 > 白班/日班/早班
+                        if (shiftName.includes('夜') || shiftName.includes('凌晨') || shiftName.includes('晚') || shiftName.includes('night')) {
+                            shiftCategory = 'night';
+                        } else if (shiftName.includes('中') || shiftName.includes('下午') || shiftName.includes('午') || shiftName.includes('afternoon')) {
+                            shiftCategory = 'mid';
+                        } else if (shiftName.includes('日') || shiftName.includes('白') || shiftName.includes('早') || shiftName.includes('上午') || shiftName.includes('morning') || shiftName.includes('day')) {
+                            shiftCategory = 'day';
+                        } else {
+                            // 对于无法明确分类的工作班次，默认视为白班
+                            shiftCategory = 'day';
+                        }
+                    }
+                    
+                    // 根据分类结果递增对应计数器
+                    switch (shiftCategory) {
+                        case 'day':
+                            dayShift++;
+                            break;
+                        case 'mid':
+                            midShift++;
+                            break;
+                        case 'night':
+                            nightShift++;
+                            break;
+                    }
+                } else {
+                    consecutiveWorkDays = 0;
+                }
+                
+                // 记录当天的连续工作天数
+                dailyConsecutiveDays.push(consecutiveWorkDays);
+            });
+
+            // 计算加班时数 - 使用正确公式：实际出勤小时数 - 应出勤时数（应出勤天数×8）
+            const overtimeHours = totalWorkHours - this.LEGAL_WORK_HOURS_PER_MONTH;
+            
+            // 计算工时完成率
+            const workHoursCompletionRate = this.LEGAL_WORK_HOURS_PER_MONTH > 0 ? 
+                Math.round((totalWorkHours / this.LEGAL_WORK_HOURS_PER_MONTH) * 100) : 0;
+
+            return {
+                maxConsecutive: maxConsecutiveWorkDays,
+                dayShift: dayShift,
+                midShift: midShift,
+                nightShift: nightShift,
+                totalWorkDays: totalWorkDays,
+                totalWorkHours: totalWorkHours,
+                overtimeHours: overtimeHours,
+                dailyConsecutiveDays: dailyConsecutiveDays,
+                workHoursCompletionRate: workHoursCompletionRate
+            };
+        };
+
+        // 统计面板相关功能模块
+        SchedulingSystem.StatisticsModule = {
+            // 初始化员工ID到数据的映射缓存
+            initEmployeeMap: function() {
+                this.employeeMap = new Map(SchedulingSystem.scheduleData.map(employee => [employee.employeeId, employee]));
+            },
+            
+            // 更新行统计数据（最高连续天数、白班、中班、夜班、总上班天数、总出勤小时数）
+            updateRowStatistics: function(row, employeeData) {
+                const stats = employeeData.stats;
+                const cells = row.getElementsByTagName('td');
+                
+                // 确保有足够的单元格来包含统计列
+                if (cells.length < 6) return; // 至少需要6列统计列
+                
+                // 统计列总是位于行的最后六列
+                const totalCells = cells.length;
+                
+                // 最高连续上班天数
+                const maxConsecutiveCell = cells[totalCells - 6];
+                // 白班天数
+                const dayShiftCell = cells[totalCells - 5];
+                // 中班天数
+                const midShiftCell = cells[totalCells - 4];
+                // 夜班天数
+                const nightShiftCell = cells[totalCells - 3];
+                // 总上班天数
+                const totalWorkDaysCell = cells[totalCells - 2];
+                // 总出勤小时数
+                const totalWorkHoursCell = cells[totalCells - 1];
+                
+                // 确保所有统计单元格都存在
+                if (maxConsecutiveCell && dayShiftCell && midShiftCell && nightShiftCell && totalWorkDaysCell && totalWorkHoursCell) {
+                    maxConsecutiveCell.textContent = stats.maxConsecutive;
+                    // 连续上班天数≥7天高亮显示
+                    const isHighConsecutive = stats.maxConsecutive >= 7;
+                    maxConsecutiveCell.style.backgroundColor = isHighConsecutive ? '#fee2e2' : '';
+                    maxConsecutiveCell.style.color = isHighConsecutive ? '#dc2626' : '';
+                    maxConsecutiveCell.style.fontWeight = 'bold';
+                    
+                    dayShiftCell.textContent = stats.dayShift;
+                    midShiftCell.textContent = stats.midShift;
+                    nightShiftCell.textContent = stats.nightShift;
+                    totalWorkDaysCell.textContent = stats.totalWorkDays;
+                    totalWorkHoursCell.textContent = stats.totalWorkHours.toFixed(1);
+                }
+            },
+            
+            // 更新连续工作天数高亮（连续≥7天的单元格）
+            updateConsecutiveHighlights: function(row, employeeData) {
+                const stats = employeeData.stats;
+                const selects = row.getElementsByTagName('select');
+                
+                // 确保数据完整性
+                if (!stats.dailyConsecutiveDays || selects.length !== stats.dailyConsecutiveDays.length) {
+                    return;
+                }
+                
+                // 批量更新连续工作高亮
+                for (let dayIndex = 0; dayIndex < selects.length; dayIndex++) {
+                    const select = selects[dayIndex];
+                    const consecutiveCount = stats.dailyConsecutiveDays[dayIndex];
+                    select.classList.toggle('consecutive-work-highlight', consecutiveCount >= 7);
+                }
+            },
+            
+            // 累加统计面板数据
+            accumulatePanelStats: function(employeeData, stats, panelStats) {
+                // 更新连续上班统计
+                if (stats.maxConsecutive >= 7) panelStats.consecutive7Days++;
+                if (stats.maxConsecutive >= 10) panelStats.consecutive10Days++;
+                
+                // 更新班次分布统计
+                panelStats.totalDayShifts += stats.dayShift;
+                panelStats.totalMidShifts += stats.midShift;
+                panelStats.totalNightShifts += stats.nightShift;
+                
+                // 计算休息天数 - 使用总天数减去总上班天数
+                const restDays = employeeData.schedule.length - stats.totalWorkDays;
+                panelStats.totalRestDays += restDays;
+                
+                // 更新总排班天数
+                panelStats.totalScheduleDays += employeeData.schedule.length;
+                
+                // 新增：更新加班统计
+                if (stats.overtimeHours > 36) panelStats.overtime36Hours++;
+                if (stats.overtimeHours > 60) panelStats.overtime60Hours++;
+                
+                // 新增：更新出勤合规统计
+                panelStats.totalActualWorkDays += stats.totalWorkDays;
+                panelStats.totalActualWorkHours += stats.totalWorkHours;
+            },
+            
+            // 更新统计面板显示
+            updatePanelDisplay: function(panelStats) {
+                const cachedElements = SchedulingSystem.cachedElements;
+                const statElements = cachedElements.stats;
+                if (!statElements) {
+                    console.error('统计面板元素未初始化');
+                    return;
+                }
+                
+                // 获取当前可见的员工数量（筛选后的结果）
+                const totalEmployees = (() => {
+                    if (!cachedElements.scheduleTable) return SchedulingSystem.scheduleData.length;
+                    const tbody = cachedElements.scheduleTable.querySelector('tbody');
+                    if (!tbody) return SchedulingSystem.scheduleData.length;
+                    const rows = tbody.querySelectorAll('tr');
+                    let visibleCount = 0;
+                    rows.forEach(row => {
+                        if (row.style.display !== 'none') visibleCount++;
+                    });
+                    return visibleCount;
+                })();
+                
+                // 计算百分比和平均值
+                const attentionRatio = totalEmployees > 0 ? Math.round((panelStats.consecutive7Days / totalEmployees) * 100) : 0;
+                const restRatio = panelStats.totalScheduleDays > 0 ? Math.round((panelStats.totalRestDays / panelStats.totalScheduleDays) * 100) : 0;
+                const avgWorkDays = totalEmployees > 0 ? Math.round(panelStats.totalActualWorkDays / totalEmployees) : 0;
+                const workRatio = panelStats.totalScheduleDays > 0 ? Math.round((panelStats.totalActualWorkDays / panelStats.totalScheduleDays) * 100) : 0;
+                
+                // 更新统计面板数值
+                if (statElements.consecutive7Days) {
+                    statElements.consecutive7Days.textContent = panelStats.consecutive7Days;
+                } else {
+                    console.error('consecutive7Days元素未找到');
+                }
+                if (statElements.consecutive10Days) {
+                    statElements.consecutive10Days.textContent = panelStats.consecutive10Days;
+                } else {
+                    console.error('consecutive10Days元素未找到');
+                }
+                if (statElements.totalEmployees) {
+                    statElements.totalEmployees.textContent = totalEmployees;
+                } else {
+                    console.error('totalEmployees元素未找到');
+                }
+                if (statElements.attentionRatio) {
+                    statElements.attentionRatio.textContent = `${attentionRatio}%`;
+                    
+                    // 根据比例设置颜色
+                    if (attentionRatio > 50) {
+                        statElements.attentionRatio.className = 'font-medium text-red-600';
+                    } else if (attentionRatio > 20) {
+                        statElements.attentionRatio.className = 'font-medium text-yellow-600';
+                    } else {
+                        statElements.attentionRatio.className = 'font-medium text-green-600';
+                    }
+                } else {
+                    console.error('attentionRatio元素未找到');
+                }
+                
+                // 更新班次分布统计
+                if (statElements.dayShiftsCount) {
+                    statElements.dayShiftsCount.textContent = panelStats.totalDayShifts;
+                } else {
+                    console.error('dayShiftsCount元素未找到');
+                }
+                if (statElements.midShiftsCount) {
+                    statElements.midShiftsCount.textContent = panelStats.totalMidShifts;
+                } else {
+                    console.error('midShiftsCount元素未找到');
+                }
+                if (statElements.nightShiftsCount) {
+                    statElements.nightShiftsCount.textContent = panelStats.totalNightShifts;
+                } else {
+                    console.error('nightShiftsCount元素未找到');
+                }
+                
+                // 更新休息情况统计
+                if (statElements.restDaysCount) {
+                    statElements.restDaysCount.textContent = panelStats.totalRestDays;
+                } else {
+                    console.error('restDaysCount元素未找到');
+                }
+                if (statElements.restRatio) {
+                    statElements.restRatio.textContent = `${restRatio}%`;
+                } else {
+                    console.error('restRatio元素未找到');
+                }
+                
+                // 更新工作负载统计
+                if (statElements.avgWorkDays) {
+                    statElements.avgWorkDays.textContent = avgWorkDays;
+                } else {
+                    console.error('avgWorkDays元素未找到');
+                }
+                if (statElements.workRatio) {
+                    statElements.workRatio.textContent = `${workRatio}%`;
+                } else {
+                    console.error('workRatio元素未找到');
+                }
+                
+                // 新增：更新加班统计
+                const overtime36Ratio = totalEmployees > 0 ? Math.round((panelStats.overtime36Hours / totalEmployees) * 100) : 0;
+                const overtime60Ratio = totalEmployees > 0 ? Math.round((panelStats.overtime60Hours / totalEmployees) * 100) : 0;
+                
+                if (statElements.overtime36Hours) {
+                    statElements.overtime36Hours.textContent = panelStats.overtime36Hours;
+                } else {
+                    console.error('overtime36Hours元素未找到');
+                }
+                if (statElements.overtime60Hours) {
+                    statElements.overtime60Hours.textContent = panelStats.overtime60Hours;
+                } else {
+                    console.error('overtime60Hours元素未找到');
+                }
+                if (statElements.overtime36Ratio) {
+                    statElements.overtime36Ratio.textContent = `${overtime36Ratio}%`;
+                } else {
+                    console.error('overtime36Ratio元素未找到');
+                }
+                if (statElements.overtime60Ratio) {
+                    statElements.overtime60Ratio.textContent = `${overtime60Ratio}%`;
+                } else {
+                    console.error('overtime60Ratio元素未找到');
+                }
+                
+                // 新增：更新实际FTE统计
+                // 计算实际FTE = 所有人的总出勤小时数之和 / (单次的应出勤天数 * 8)
+                const requiredWorkHours = SchedulingSystem.LEGAL_WORK_DAYS_PER_MONTH * 8;
+                const actualFte = requiredWorkHours > 0 ? (panelStats.totalActualWorkHours / requiredWorkHours).toFixed(1) : 0;
+                
+                if (statElements.actualFte) {
+                    statElements.actualFte.textContent = actualFte;
+                } else {
+                    console.error('actualFte元素未找到');
+                }
+                if (statElements.requiredWorkHours) {
+                    statElements.requiredWorkHours.textContent = requiredWorkHours.toFixed(0);
+                } else {
+                    console.error('requiredWorkHours元素未找到');
+                }
+            },
+            
+            // 重置统计面板（无数据时调用）
+            resetStatistics: function() {
+                const statElements = SchedulingSystem.cachedElements.stats;
+                if (!statElements) return;
+                
+                // 重置所有统计数据为0
+                const resetValue = '0';
+                if (statElements.consecutive7Days) statElements.consecutive7Days.textContent = resetValue;
+                if (statElements.consecutive10Days) statElements.consecutive10Days.textContent = resetValue;
+                if (statElements.totalEmployees) statElements.totalEmployees.textContent = resetValue;
+                if (statElements.attentionRatio) {
+                    statElements.attentionRatio.textContent = '0%';
+                    statElements.attentionRatio.className = 'font-medium';
+                }
+                if (statElements.dayShiftsCount) statElements.dayShiftsCount.textContent = resetValue;
+                if (statElements.midShiftsCount) statElements.midShiftsCount.textContent = resetValue;
+                if (statElements.nightShiftsCount) statElements.nightShiftsCount.textContent = resetValue;
+                if (statElements.restDaysCount) statElements.restDaysCount.textContent = resetValue;
+                if (statElements.restRatio) statElements.restRatio.textContent = '0%';
+                if (statElements.avgWorkDays) statElements.avgWorkDays.textContent = resetValue;
+                if (statElements.workRatio) statElements.workRatio.textContent = '0%';
+                
+                // 新增：重置加班统计
+                if (statElements.overtime36Hours) statElements.overtime36Hours.textContent = resetValue;
+                if (statElements.overtime60Hours) statElements.overtime60Hours.textContent = resetValue;
+                if (statElements.overtime36Ratio) statElements.overtime36Ratio.textContent = '0%';
+                if (statElements.overtime60Ratio) statElements.overtime60Ratio.textContent = '0%';
+                
+                // 新增：重置实际FTE统计
+                if (statElements.actualFte) statElements.actualFte.textContent = '0.0';
+                if (statElements.requiredWorkHours) statElements.requiredWorkHours.textContent = '0';
+            },
+            
+            // 更新所有员工的统计数据
+            updateAllStatistics: function() {
+                // 验证必要的DOM元素
+                const cachedElements = SchedulingSystem.cachedElements;
+                if (!cachedElements.scheduleTable) return;
+                
+                const tbody = cachedElements.scheduleTable.querySelector('tbody');
+                if (!tbody) return;
+                
+                // 初始化员工映射缓存
+                this.initEmployeeMap();
+                
+                // 初始化统计面板数据
+                const panelStats = {
+                    consecutive7Days: 0,
+                    consecutive10Days: 0,
+                    totalDayShifts: 0,
+                    totalMidShifts: 0,
+                    totalNightShifts: 0,
+                    totalRestDays: 0,
+                    totalScheduleDays: 0,
+                    // 新增：加班统计
+                    overtime36Hours: 0,
+                    overtime60Hours: 0,
+                    // 新增：出勤合规统计
+                    totalActualWorkDays: 0,
+                    totalActualWorkHours: 0,
+                    totalRequiredWorkDays: 0,
+                    totalRequiredWorkHours: 0,
+                    // 新增：实际FTE相关
+                    actualFte: 0
+                };
+                
+                // 遍历所有员工行，只处理可见的行（筛选后的结果）
+                const rows = tbody.getElementsByTagName('tr');
+                for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+                    const row = rows[rowIndex];
+                    // 检查行是否可见（筛选后显示的行）
+                    if (row.style.display === 'none') continue;
+                    
+                    const employeeId = row.dataset.employeeId;
+                    const employeeData = this.employeeMap.get(employeeId);
+                    
+                    if (!employeeData) continue;
+                    
+                    // 重新计算员工统计数据，确保使用最新的排班数据
+                    employeeData.stats = SchedulingSystem.calculateEmployeeStats(employeeData.schedule);
+                    const stats = employeeData.stats;
+                    
+                    // 更新行统计
+                    this.updateRowStatistics(row, employeeData);
+                    
+                    // 更新连续工作高亮
+                    this.updateConsecutiveHighlights(row, employeeData);
+                    
+                    // 累加统计面板数据
+                    this.accumulatePanelStats(employeeData, stats, panelStats);
+                }
+                
+                // 更新统计面板显示
+                this.updatePanelDisplay(panelStats);
+            },
+            
+            // 统一入口：更新统计数据
+            updateStatistics: function() {
+                if (SchedulingSystem.scheduleData.length === 0) {
+                    // 无数据时重置统计
+                    this.resetStatistics();
+                    return;
+                }
+                
+                // 有数据时更新所有统计
+                this.updateAllStatistics();
+            }
+        };
+
+        // 处理文件上传
+        SchedulingSystem.handleFileUpload = function(e) {
+            // 使用cachedElements缓存的DOM元素，提高性能和一致性
+            const cachedElements = this.cachedElements;
+            const importBtn = cachedElements.importBtn;
+            const startDateInput = cachedElements.startDateInput;
+            const daysCountInput = cachedElements.daysCountInput;
+            const employeesCountInput = cachedElements.employeesCountInput;
+            
+            // 禁用导入按钮，防止重复点击
+            if (importBtn) {
+                importBtn.disabled = true;
+                importBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i> 导入中...';
+            }
+            const file = e.target.files[0];
+            if (!file) {
+                // 如果没有选择文件，恢复按钮状态
+                if (importBtn) {
+                    importBtn.disabled = false;
+                    importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                }
+                return;
+            }
+
+            console.log('文件上传:', file.name);
+
+            // 检查文件类型
+            const fileExtension = file.name.split('.').pop().toLowerCase();
+            const validExtensions = ['xlsx', 'xls', 'csv'];
+            
+            if (!validExtensions.includes(fileExtension)) {
+                alert('不支持的文件格式，请上传 .xlsx, .xls 或 .csv 文件');
+                // 恢复导入按钮状态
+                if (importBtn) {
+                    importBtn.disabled = false;
+                    importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                }
+                return;
+            }
+
+            // 创建加载进度指示器
+            const progressContainer = document.createElement('div');
+            progressContainer.className = 'fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white rounded-lg shadow-xl p-6 z-50 flex flex-col items-center';
+            progressContainer.innerHTML = `
+                <div class="text-xl font-bold text-gray-800 mb-4">数据导入</div>
+                <div class="w-64 h-4 bg-gray-200 rounded-full overflow-hidden mb-2">
+                    <div id="import-progress-bar" class="h-full bg-primary rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div id="import-progress-text" class="text-sm text-gray-600">准备中...</div>
+            `;
+            document.body.appendChild(progressContainer);
+
+            const updateProgress = (percent, text) => {
+                const progressBar = document.getElementById('import-progress-bar');
+                const progressText = document.getElementById('import-progress-text');
+                if (progressBar) progressBar.style.width = `${percent}%`;
+                if (progressText) progressText.textContent = text;
+            };
+
+            const reader = new FileReader();
+            // 保存SchedulingSystem的引用，避免在回调函数中丢失this上下文
+            const schedulingSystem = this;
+            reader.onload = function(e) {
+                let progressContainerRef = progressContainer;
+                try {
+                    let workbook;
+                    let jsonData;
+
+                    if (fileExtension === 'csv') {
+                            // 在主线程处理CSV文件
+                            updateProgress(10, '正在解析CSV文件...');
+                            const text = e.target.result;
+                            const lines = text.split('\n').filter(line => line.trim());
+                        
+                        if (lines.length === 0) {
+                            alert('CSV文件没有数据');
+                            return;
+                        }
+
+                        // 解析CSV
+                        const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+                        
+                        jsonData = [];
+                        for (let i = 1; i < lines.length; i++) {
+                            const line = lines[i].trim();
+                            if (!line) continue;
+                            
+                            // 正确处理带引号的CSV字段
+                        const values = [];
+                        let currentValue = '';
+                        let inQuotes = false;
+                        
+                        for (let j = 0; j < line.length; j++) {
+                            const char = line[j];
+                            
+                            if (char === '"') {
+                                // 处理转义的引号 ("")
+                                if (j + 1 < line.length && line[j + 1] === '"') {
+                                    currentValue += '"';
+                                    j++; // 跳过下一个引号
+                                } else {
+                                    inQuotes = !inQuotes;
+                                }
+                            } else if (char === ',' && !inQuotes) {
+                                values.push(currentValue.trim().replace(/"/g, ''));
+                                currentValue = '';
+                            } else {
+                                currentValue += char;
+                            }
+                        }
+                        values.push(currentValue.trim().replace(/"/g, ''));
+                            
+                            const row = {};
+                            headers.forEach((header, index) => {
+                                row[header] = values[index] || '';
+                            });
+                            jsonData.push(row);
+                        }
+                    } else {
+                        // 处理Excel文件
+                        updateProgress(10, '正在解析Excel文件...');
+                        const data = new Uint8Array(e.target.result);
+                        
+                        // 检查XLSX库是否已经加载
+                        if (typeof XLSX === 'undefined') {
+                            alert('XLSX库加载失败，请刷新页面重试');
+                            // 清理进度指示器
+                            if (progressContainerRef && document.body.contains(progressContainerRef)) {
+                                document.body.removeChild(progressContainerRef);
+                            }
+                            // 恢复导入按钮状态
+                            if (importBtn) {
+                                importBtn.disabled = false;
+                                importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                            }
+                            return;
+                        }
+                        
+                        workbook = XLSX.read(data, { type: 'array' });
+                        
+                        // 获取第一个工作表
+                        const sheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[sheetName];
+                        
+                        // 转换为JSON
+                        jsonData = XLSX.utils.sheet_to_json(worksheet);
+                    }
+                    
+                    if (!jsonData || jsonData.length === 0) {
+                        alert('没有成功解析任何数据，请检查文件格式');
+                        // 恢复导入按钮状态
+                        if (importBtn) {
+                            importBtn.disabled = false;
+                            importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                        }
+                        // 清理进度指示器
+                        if (progressContainerRef && document.body.contains(progressContainerRef)) {
+                            document.body.removeChild(progressContainerRef);
+                        }
+                        return;
+                    }
+                    
+                    // 处理导入的数据
+                    updateProgress(30, '正在处理数据...');
+                    
+                    // 用于存储新数据的临时数组
+                    const newData = [];
+                    
+                    // 定义比较前13列的函数
+                    // 将比较函数定义为SchedulingSystem的方法
+                    SchedulingSystem.compareFirst13Columns = function(existing, newEmp) {
+                        const existingId = String(existing.employeeId || '').trim();
+                        const newId = String(newEmp.employeeId || '').trim();
+                        const existingName = String(existing.employeeName || '').trim();
+                        const newName = String(newEmp.employeeName || '').trim();
+                        return existingId === newId && existingName === newName;
+                    };
+
+                    // 处理数据
+                    jsonData.forEach((row, index) => {
+                        try {
+                            // 智能识别员工ID和姓名列
+                            let employeeId = '';
+                            let employeeName = '';
+                            
+                            // 尝试通过列名识别
+                            const keys = Object.keys(row);
+                            for (const key of keys) {
+                                const lowerKey = key.toLowerCase();
+                                if (lowerKey.includes('id') || lowerKey.includes('工号') || lowerKey.includes('编号')) {
+                                    employeeId = row[key] || employeeId;
+                                } else if (lowerKey.includes('name') || lowerKey.includes('姓名') || lowerKey.includes('员工')) {
+                                    employeeName = row[key] || employeeName;
+                                }
+                            }
+                            
+                            // 如果通过列名没有找到，使用位置索引
+                            if (!employeeId && keys.length > 0) {
+                                employeeId = row[keys[0]] || '';
+                            }
+                            if (!employeeName && keys.length > 1) {
+                                employeeName = row[keys[1]] || '';
+                            }
+                            
+                            // 处理员工ID和姓名：去除空格并确保是字符串类型
+                            employeeId = String(employeeId || '').trim();
+                            employeeName = String(employeeName || '').trim();
+                            
+                            // 如果还是没有数据，使用默认值
+                            if (!employeeId) {
+                                employeeId = `EMP${String(index + 1).padStart(3, '0')}`;
+                            }
+                            if (!employeeName) {
+                                employeeName = `员工${String(index + 1).padStart(3, '0')}`;
+                            }
+                            
+                            // 解析数据，支持分组和第1-10层
+                            const group = keys.find(key => key.toLowerCase().includes('分组')) ? row[keys.find(key => key.toLowerCase().includes('分组'))] : '';
+                            
+                            // 解析第1-10层数据
+                            const layers = {};
+                            
+                            // 首先尝试通过关键词查找部门信息
+                            let deptValue = '';
+                            
+                            // 1. 优先从第5层列获取部门信息
+                            const layer5Key = keys.find(key => key.includes('第5层'));
+                            if (layer5Key) {
+                                deptValue = row[layer5Key] || '';
+                            }
+                            
+                            // 2. 如果没有找到，检查所有列，寻找包含"部门"或"dept"的列
+                            if (!deptValue) {
+                                for (let i = 0; i < keys.length; i++) {
+                                    const key = keys[i];
+                                    const lowerKey = key.toLowerCase();
+                                    if (lowerKey.includes('部门') || lowerKey.includes('dept')) {
+                                        deptValue = row[key] || '';
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // 3. 最终保障：明确从第五列获取数据（索引4）
+                            if (!deptValue && keys.length > 4) {
+                                deptValue = row[keys[4]] || '';
+                            }
+                            
+                            // 解析其他层数据
+                            for (let i = 1; i <= 10; i++) {
+                                if (i === 7) {
+                                    // layer7特殊处理，使用前面获取的部门信息
+                                    layers['layer7'] = deptValue;
+                                } else {
+                                    const layerKey = keys.find(key => key.includes(`第${i}层`));
+                                    layers[`layer${i}`] = layerKey ? row[layerKey] : '';
+                                }
+                            }
+                            
+                            // 解析排班数据（排除已知的非日期列后剩余的列）
+                            const schedule = [];
+                            // 排除已知的非日期列：员工编码、姓名、分组、第1-10层
+                            const knownNonDateColumns = new Set(['员工编码', '姓名', '分组']);
+                            for (let i = 1; i <= 10; i++) {
+                                knownNonDateColumns.add(`第${i}层`);
+                                // 也添加可能的英文或其他语言版本
+                                knownNonDateColumns.add(`layer${i}`);
+                                knownNonDateColumns.add(`Layer ${i}`);
+                            }
+                            // 根据列名过滤出日期列
+                            const dateColumns = keys.filter(key => {
+                                // 检查是否为已知的非日期列
+                                if (knownNonDateColumns.has(key)) return false;
+                                
+                                // 检查是否可能是日期列（包含年、月、日等关键词，或者是数字索引）
+                                const lowerKey = key.toLowerCase();
+                                return lowerKey.includes('年') || 
+                                       lowerKey.includes('月') || 
+                                       lowerKey.includes('日') || 
+                                       !isNaN(parseInt(key)) || // 数字索引
+                                       lowerKey.includes('date') || // 英文日期
+                                       /^\d{4}-\d{2}-\d{2}$/.test(key); // 完整日期格式 YYYY-MM-DD
+                            });
+                            
+                            // 对日期列进行排序，确保排班数据顺序正确
+                            dateColumns.sort((a, b) => {
+                                // 尝试将列名解析为日期
+                                const dateA = new Date(a);
+                                const dateB = new Date(b);
+                                
+                                // 处理包含月份和日期的列名（如"12月31日"）
+                                const monthDayRegex = /(\d{1,2})月(\d{1,2})日/;
+                                const matchA = a.match(monthDayRegex);
+                                const matchB = b.match(monthDayRegex);
+                                
+                                if (matchA && matchB) {
+                                    // 如果都是月份日期格式，比较月份和日期
+                                    const monthA = parseInt(matchA[1]);
+                                    const dayA = parseInt(matchA[2]);
+                                    const monthB = parseInt(matchB[1]);
+                                    const dayB = parseInt(matchB[2]);
+                                    
+                                    if (monthA !== monthB) {
+                                        return monthA - monthB;
+                                    } else {
+                                        return dayA - dayB;
+                                    }
+                                } else if (!isNaN(dateA.getTime()) && !isNaN(dateB.getTime())) {
+                                    // 如果都是有效日期，按日期排序
+                                    return dateA.getTime() - dateB.getTime();
+                                } else {
+                                    // 如果不是日期，按列名的字母顺序排序
+                                    return a.localeCompare(b);
+                                }
+                            });
+                            
+                            dateColumns.forEach(col => {
+                                const shiftValue = row[col];
+                                let shift;
+                                
+                                if (typeof shiftValue === 'string' && shiftValue.includes('-')) {
+                                    // 如果格式是 "ID - 名称"
+                                    const shiftId = shiftValue.split('-')[0].trim();
+                                    shift = SchedulingSystem.shiftTypeMap.get(shiftId) || SchedulingSystem.shiftTypes[0];
+                                } else if (typeof shiftValue === 'string') {
+                                    // 如果只有ID
+                                    shift = SchedulingSystem.shiftTypeMap.get(shiftValue) || SchedulingSystem.shiftTypes[0];
+                                } else {
+                                    // 默认休息
+                                    shift = SchedulingSystem.shiftTypes[0];
+                                }
+                                
+                                schedule.push(shift);
+                            });
+
+                            // 预计算员工统计数据，避免渲染时重复计算
+                            const stats = SchedulingSystem.calculateEmployeeStats(schedule);
+                            
+                            // 创建新员工对象
+                            const newEmployee = {
+                                employeeId: employeeId,
+                                employeeName: employeeName,
+                                group: group,
+                                ...layers,
+                                schedule: schedule,
+                                stats: stats
+                            };
+                            
+                            // 检查是否存在匹配的现有员工（前13列相同）
+                            const existingIndex = schedulingSystem.scheduleData.findIndex(existing => 
+                                SchedulingSystem.compareFirst13Columns(existing, newEmployee)
+                            );
+                            
+                            if (existingIndex !== -1) {
+                                // 如果存在匹配的员工，则覆盖现有数据
+                                schedulingSystem.scheduleData[existingIndex] = newEmployee;
+                            } else {
+                                // 如果不存在匹配的员工，则添加新员工
+                                schedulingSystem.scheduleData.push(newEmployee);
+                            }
+
+                        } catch (rowError) {
+                            console.error(`处理第${index + 1}行数据时出错:`, rowError);
+                            alert(`处理第${index + 1}行数据时出错: ${rowError.message}`);
+                        }
+                    });
+                    
+                    // 更新进度
+                    updateProgress(90, '正在生成排班表...');
+
+                    // 重新生成表格
+                    const firstEmployee = schedulingSystem.scheduleData[0];
+                    const daysCount = firstEmployee ? firstEmployee.schedule.length : 0;
+                    
+                    // 让用户选择导入数据的开始日期
+                    const currentStartDate = startDateInput ? startDateInput.value : '';
+                    const userStartDate = prompt('请输入导入数据的开始日期（格式：YYYY-MM-DD），\n留空则使用当前日期：', currentStartDate || '');
+                    
+                    // 使用用户选择的日期或当前日期作为开始日期
+                    const startDate = userStartDate ? new Date(userStartDate) : new Date();
+                    
+                    // 如果用户输入的日期无效，使用当前日期
+                    const effectiveStartDate = isNaN(startDate.getTime()) ? new Date() : startDate;
+                    
+                    // 更新开始日期输入框
+                    const formattedStartDate = effectiveStartDate.toISOString().split('T')[0];
+                    if (startDateInput) {
+                        startDateInput.value = formattedStartDate;
+                    }
+                    
+                    // 更新输入框值
+                    if (daysCountInput) {
+                        daysCountInput.value = daysCount;
+                    }
+                    if (employeesCountInput) {
+                        employeesCountInput.value = schedulingSystem.scheduleData.length;
+                    }
+                    
+                    // 使用requestAnimationFrame分散DOM操作，避免阻塞主线程
+                    requestAnimationFrame(() => {
+                        // 重新生成表格
+                        schedulingSystem.renderScheduleTable(effectiveStartDate, daysCount);
+                        
+                        // 更新搜索缓存
+                            requestAnimationFrame(() => {
+                                schedulingSystem.initSearchCache();
+                                // 更新部门筛选下拉菜单
+                                schedulingSystem.updateLayer7Filter();
+                                  
+                                updateProgress(100, '导入完成！');
+                                setTimeout(() => {
+                                    // 清理进度指示器
+                                    if (progressContainerRef && document.body.contains(progressContainerRef)) {
+                                        document.body.removeChild(progressContainerRef);
+                                    }
+                                    alert(`成功导入 ${schedulingSystem.scheduleData.length} 名员工的排班数据`);
+                                }, 500);
+                            });
+                    });
+                } catch (error) {
+                    console.error('处理文件数据时出错:', error);
+                    alert(`处理文件数据时出错: ${error.message}`);
+                    // 清理进度指示器
+                    if (progressContainerRef && document.body.contains(progressContainerRef)) {
+                        document.body.removeChild(progressContainerRef);
+                    }
+                } finally {
+                    // 恢复导入按钮状态
+                    if (importBtn) {
+                        importBtn.disabled = false;
+                        importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                    }
+                    // 清理进度指示器
+                    if (progressContainerRef && document.body.contains(progressContainerRef)) {
+                        document.body.removeChild(progressContainerRef);
+                    }
+                }
+            };
+            
+            reader.onerror = function(error) {
+                console.error('文件读取失败:', error);
+                alert(`文件读取失败: ${error.message}`);
+                // 清理进度指示器
+                if (progressContainer && document.body.contains(progressContainer)) {
+                    document.body.removeChild(progressContainer);
+                }
+                // 恢复导入按钮状态
+                if (importBtn) {
+                    importBtn.disabled = false;
+                    importBtn.innerHTML = '<i class="fa fa-upload mr-2"></i>导入Excel';
+                }
+            };
+            
+            // 根据文件类型选择正确的读取方式
+            if (fileExtension === 'csv') {
+                reader.readAsText(file, 'UTF-8');
+            } else {
+                reader.readAsArrayBuffer(file);
+            }
+        }
+
+        // 处理导出Excel
+        SchedulingSystem.handleExportExcel = function() {
+            console.log('导出到Excel');
+            
+            // 检查数据
+            if (this.scheduleData.length === 0) {
+                alert('没有数据可以导出');
+                return;
+            }
+            
+            try {
+                // 检查XLSX库是否已经加载
+                if (typeof XLSX === 'undefined') {
+                    alert('XLSX库加载失败，请刷新页面重试');
+                    return;
+                }
+                
+                // 准备导出数据
+                const exportData = [];
+                
+                // 获取日期信息
+                const firstEmployee = this.scheduleData[0];
+                const daysCount = firstEmployee ? firstEmployee.schedule.length : 0;
+                
+                // 创建表头
+                const headers = ['员工编码', '姓名', '分组'];
+                
+                // 添加第1层至第10层
+                for (let i = 1; i <= 10; i++) {
+                    headers.push(`第${i}层`);
+                }
+                
+                // 获取排班表的实际开始日期
+                const scheduleStartDate = this.cachedElements.startDateInput && this.cachedElements.startDateInput.value ? new Date(this.cachedElements.startDateInput.value) : new Date();
+                
+                for (let i = 0; i < daysCount; i++) {
+                    const date = new Date(scheduleStartDate);
+                    date.setDate(scheduleStartDate.getDate() + i);
+                    // 格式化为YYYY-MM-DD格式
+                    const year = date.getFullYear();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    headers.push(`${year}-${month}-${day}`);
+                }
+                exportData.push(headers);
+                
+                // 获取当前选中的部门筛选条件
+                const selectedLayer7 = this.cachedElements.layer7Filter ? this.cachedElements.layer7Filter.value : '';
+                
+                // 创建数据行，只导出筛选后的员工数据
+                let exportedEmployeeCount = 0;
+                this.scheduleData.forEach((employee, index) => {
+                    // 如果有部门筛选条件且员工不匹配该部门，则跳过导出
+                    if (selectedLayer7 && employee.layer7 !== selectedLayer7) {
+                        return;
+                    }
+                    exportedEmployeeCount++;
+                    const row = [
+                        employee.employeeId || '',
+                        employee.employeeName || '',
+                        employee.group || ''
+                    ];
+                    
+                    // 添加第1层至第10层数据
+                    for (let i = 1; i <= 10; i++) {
+                        // 第7层数据清空
+                        if (i === 7) {
+                            row.push('');
+                        } else {
+                            row.push(employee[`layer${i}`] || '');
+                        }
+                    }
+                    
+                    // 添加排班数据
+                    employee.schedule.forEach(shift => {
+                        if (shift && shift.id && shift.name) {
+                            row.push(`${shift.id} - ${shift.name}`);
+                        } else {
+                            row.push('');
+                        }
+                    });
+                    
+                    exportData.push(row);
+                });
+                
+                // 检查是否有数据可以导出（排除表头）
+                if (exportData.length <= 1) {
+                    alert('没有符合筛选条件的数据可以导出');
+                    return;
+                }
+                
+                // 创建工作簿和工作表
+                const workbook = XLSX.utils.book_new();
+                const worksheet = XLSX.utils.aoa_to_sheet(exportData);
+                
+                // 设置列宽
+                const colWidths = [
+                    { wch: 15 }, // 员工编码
+                    { wch: 15 }, // 姓名
+                    { wch: 10 }, // 分组
+                ];
+                
+                // 添加第1-10层的列宽
+                for (let i = 1; i <= 10; i++) {
+                    colWidths.push({ wch: 10 }); // 第N层
+                }
+                
+                for (let i = 0; i < daysCount; i++) {
+                    colWidths.push({ wch: 25 }); // 日期列
+                }
+                
+                worksheet['!cols'] = colWidths;
+                
+                // 添加工作表到工作簿
+                XLSX.utils.book_append_sheet(workbook, worksheet, '排班表');
+                
+                // 生成Excel文件
+                const excelBuffer = XLSX.write(workbook, { 
+                    bookType: 'xlsx', 
+                    type: 'array',
+                    cellStyles: true,
+                    cellDates: true
+                });
+                
+                // 创建Blob对象
+                const blob = new Blob([excelBuffer], { 
+                    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+                });
+                
+                // 生成文件名
+                const today = new Date();
+                const dateStr = today.getFullYear() + 
+                               String(today.getMonth() + 1).padStart(2, '0') + 
+                               String(today.getDate()).padStart(2, '0');
+                const fileName = `排班表_${dateStr}.xlsx`;
+                
+                // 下载文件
+                if (typeof saveAs !== 'undefined') {
+                    // 使用FileSaver.js库
+                    saveAs(blob, fileName);
+                } else {
+                    // 浏览器原生下载方法
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }
+            } catch (error) {
+                console.error('导出失败:', error);
+                alert(`导出失败，请重试。\n错误信息：${error.message}`);
+            }
+        };
+
+    // 处理保存数据
+    SchedulingSystem.handleSaveData = function() {
+            console.log('保存排班数据');
+            
+            if (this.scheduleData.length === 0) {
+                alert('没有数据可以保存');
+                return;
+            }
+
+            try {
+                // 使用cachedElements缓存的DOM元素，提高性能和一致性
+                const cachedElements = this.cachedElements;
+                const startDateInput = cachedElements.startDateInput;
+                // 获取当前设置的开始日期
+                const currentStartDate = startDateInput ? startDateInput.value : '';
+                
+                // 准备要保存的数据
+                const dataToSave = {
+                    scheduleData: this.scheduleData,
+                    startDate: currentStartDate,
+                    daysCount: this.scheduleData[0] ? this.scheduleData[0].schedule.length : 0,
+                    employeesCount: this.scheduleData.length,
+                    savedAt: new Date().toISOString()
+                };
+
+                // 保存到本地存储
+                localStorage.setItem('schedulingSystemData', JSON.stringify(dataToSave));
+                
+                // 显示保存成功提示
+                const saveNotification = document.createElement('div');
+                saveNotification.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50 flex items-center';
+                saveNotification.innerHTML = '<i class="fa fa-check-circle mr-2"></i> 数据保存成功';
+                document.body.appendChild(saveNotification);
+                
+                // 3秒后自动隐藏提示
+                setTimeout(() => {
+                    saveNotification.style.opacity = '0';
+                    saveNotification.style.transition = 'opacity 0.5s';
+                    setTimeout(() => {
+                        if (saveNotification.parentNode) {
+                            document.body.removeChild(saveNotification);
+                        }
+                    }, 500);
+                }, 3000);
+                
+            } catch (error) {
+                console.error('保存数据失败:', error);
+                alert('保存数据失败，请重试');
+            }
+        };
+
+        // 搜索相关缓存移到SchedulingSystem命名空间内
+        SchedulingSystem.searchCache = {
+            rows: [],
+            searchData: [] // 预存储的搜索数据：{employeeId, employeeName, group, rowIndex}
+        };
+
+        // 初始化搜索缓存
+        SchedulingSystem.initSearchCache = function() {
+            const tbody = document.querySelector('#schedule-table tbody');
+            if (!tbody) return;
+
+            // 清空现有缓存
+            this.searchCache.rows = [];
+            this.searchCache.searchData = [];
+
+            // 获取所有行
+            const allRows = Array.from(tbody.querySelectorAll('tr'));
+            this.searchCache.rows = allRows;
+
+            // 预存储搜索数据
+            allRows.forEach((row, index) => {
+                const employeeIdCell = row.querySelector('td:nth-child(2)');
+                const employeeNameCell = row.querySelector('td:nth-child(3)');
+                const groupCell = row.querySelector('td:nth-child(4)');
+                
+                const employeeId = employeeIdCell ? employeeIdCell.textContent.trim().toLowerCase() : '';
+                const employeeName = employeeNameCell ? employeeNameCell.textContent.trim().toLowerCase() : '';
+                const groupValue = groupCell ? groupCell.textContent.trim().toLowerCase() : '';
+                
+                this.searchCache.searchData.push({
+                    employeeId,
+                    employeeName,
+                    groupValue,
+                    rowIndex: index
+                });
+            });
+        };
+
+        // 处理搜索功能 - 优化版
+        SchedulingSystem.handleSearch = function(searchTerm) {
+            const tbody = document.querySelector('#schedule-table tbody');
+            if (!tbody) return;
+
+            // 如果缓存为空，初始化缓存
+            if (this.searchCache.rows.length === 0) {
+                this.initSearchCache();
+            }
+
+            const searchLower = searchTerm.toLowerCase().trim();
+            const allRows = this.searchCache.rows;
+            const searchData = this.searchCache.searchData;
+            
+            if (!searchLower) {
+                // 如果搜索词为空，显示所有行
+                for (let i = 0; i < allRows.length; i++) {
+                    const row = allRows[i];
+                    row.style.display = '';
+                    row.style.backgroundColor = i % 2 === 0 ? '#f9fafb' : 'white';
+                }
+                return;
+            }
+
+            // 使用预存储的数据进行搜索，减少DOM查询和字符串处理
+            for (let i = 0; i < searchData.length; i++) {
+                const { employeeId, employeeName, groupValue, rowIndex } = searchData[i];
+                const row = allRows[rowIndex];
+                
+                // 高效的字符串匹配
+                const idMatch = employeeId.includes(searchLower);
+                const nameMatch = employeeName.includes(searchLower);
+                const groupMatch = groupValue.includes(searchLower);
+                
+                if (idMatch || nameMatch || groupMatch) {
+                    row.style.display = '';
+                    row.style.backgroundColor = '#fef3c7';
+                } else {
+                    row.style.display = 'none';
+                }
+            }
+        };
+
+        // 从本地存储加载排班数据
+        SchedulingSystem.loadScheduleData = function() {
+            console.log('加载排班数据');
+            
+            try {
+                const savedData = localStorage.getItem('schedulingSystemData');
+                if (!savedData) {
+                    return false;
+                }
+
+                const parsedData = JSON.parse(savedData);
+                
+                // 验证数据完整性
+                if (!parsedData.scheduleData || !Array.isArray(parsedData.scheduleData) || parsedData.scheduleData.length === 0) {
+                    return false;
+                }
+
+                // 恢复数据并为缺少layer7字段的员工添加默认部门值
+                this.scheduleData = parsedData.scheduleData.map(emp => {
+                    // 如果员工没有layer7字段，添加默认部门值
+                    if (!emp.hasOwnProperty('layer7') || emp.layer7 === undefined || emp.layer7 === null) {
+                        // 为每个员工分配一个随机部门，确保下拉框有内容
+                        const departments = ['A部门', 'B部门', 'C部门', 'D部门', 'E部门'];
+                        const randomDept = departments[Math.floor(Math.random() * departments.length)];
+                        return { ...emp, layer7: randomDept };
+                    }
+                    return emp;
+                });
+                
+                // 使用cachedElements缓存的DOM元素，提高性能和一致性
+                const cachedElements = this.cachedElements;
+                const startDateInput = cachedElements.startDateInput;
+                const daysCountInput = cachedElements.daysCountInput;
+                const employeesCountInput = cachedElements.employeesCountInput;
+                
+                // 恢复设置
+                if (parsedData.startDate && startDateInput) {
+                    startDateInput.value = parsedData.startDate;
+                }
+                if (parsedData.daysCount && daysCountInput) {
+                    daysCountInput.value = parsedData.daysCount;
+                }
+                
+                // 渲染表格，确保可视化模块显示
+                const startDate = new Date(parsedData.startDate || (cachedElements.startDateInput ? cachedElements.startDateInput.value : new Date()));
+                const daysCount = parsedData.daysCount || (cachedElements.daysCountInput ? parseInt(cachedElements.daysCountInput.value) : 0);
+                this.renderScheduleTable(startDate, daysCount);
+                if (parsedData.employeesCount && employeesCountInput) {
+                    employeesCountInput.value = parsedData.employeesCount;
+                }
+                
+                // 更新搜索缓存
+                this.initSearchCache();
+                
+                // 更新部门筛选下拉菜单
+                this.updateLayer7Filter();
+
+                return true;
+
+            } catch (error) {
+                console.error('加载数据失败:', error);
+                return false;
+            }
+        };
+
+        // 检查是否有保存的数据
+        SchedulingSystem.checkSavedData = function() {
+            const hasSavedData = localStorage.getItem('schedulingSystemData') !== null;
+            if (hasSavedData) {
+                this.loadScheduleData();
+            }
+        };
+
+        // 添加一些视觉效果函数
+        SchedulingSystem.addPulseAnimation = function(element) {
+            element.classList.add('animate-pulse');
+            setTimeout(() => {
+                element.classList.remove('animate-pulse');
+            }, 2000);
+        };
+        
+        // 为统计数字添加增长动画
+        SchedulingSystem.animateNumber = function(element, target, duration = 1000) {
+            const start = 0;
+            const increment = target / (duration / 16);
+            let current = start;
+            
+            const timer = setInterval(() => {
+                current += increment;
+                if (current >= target) {
+                    element.textContent = Math.round(target);
+                    clearInterval(timer);
+                } else {
+                    element.textContent = Math.round(current);
+                }
+            }, 16);
+        };
+        
+        // 添加表格行点击效果 - 优化版
+        let currentSelectedRow = null;
+        document.addEventListener('click', function(e) {
+            // 检查点击是否发生在表格行内
+            const row = e.target.closest('tbody tr');
+            if (!row) return;
+            
+            // 移除之前选中行的样式
+            if (currentSelectedRow) {
+                currentSelectedRow.classList.remove('ring-2', 'ring-blue-500');
+            }
+            
+            // 添加当前行的选中状态
+            row.classList.add('ring-2', 'ring-blue-500');
+            currentSelectedRow = row;
+            
+            // 阻止事件冒泡
+            e.stopPropagation();
+        });
+        
+        // 页面加载完成后初始化应用 - 已在第186行设置，这里不再重复
+
+    </script>
+</body>
+</html>
